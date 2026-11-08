@@ -12,11 +12,11 @@
 
 ## 一、安装 AI 圆桌
 
-1. 打开本仓库的 **[Releases 页面](https://github.com/hulkbai-beep/ai-roundtable/releases)**，下载最新的 `AI-Roundtable-Setup-x.y.z.exe`。
+1. 下载安装包 `AI-Roundtable-Setup-x.y.z.exe`，两个地方都可以：
+   - 本仓库的 **[Releases 页面](https://github.com/hulkbai-beep/ai-roundtable/releases)**（发布过的正式版本）；
+   - 仓库的 **[Actions 页面](https://github.com/hulkbai-beep/ai-roundtable/actions)** → 最近一次带绿色勾的「测试和打包」→ 页面底部 Artifacts 里的 `AI-Roundtable-Windows`。下载下来是一个 zip，解压出来就是安装包。每次改代码都会自动生成，保留 90 天。
 2. 双击安装。安装包没有做代码签名，Windows 可能弹出“Windows 已保护你的电脑”，点「更多信息」→「仍要运行」。
 3. 装好后，开始菜单和桌面上会有 **AI 圆桌** 的图标。
-
-> 想看最新的开发版：仓库的 Actions 页面 → 最近一次成功的「测试和打包」→ 页面底部的 `AI-Roundtable-Windows`（下载下来是一个 zip，里面是安装包）。
 
 ---
 
@@ -136,4 +136,6 @@ npm test               # 自动测试
 npm run dist:win       # 打包 Windows 安装包（需要在 Windows 上运行）
 ```
 
-每次推送到 `main`，GitHub Actions 会在 Linux 和 Windows 上跑测试，再在 Windows 上打包安装包并测试打包结果。推送 `v` 开头的标签（比如 `v1.0.1`）会自动发布一个 Release。
+每次推送到 `main`，GitHub Actions 会在 Linux 和 Windows 上跑测试，再在 Windows 上打包安装包并测试打包结果。
+
+**发布一个正式版本：** 打开仓库的 Actions 页面 → 左边选「测试和打包」→ 右边点「Run workflow」→ 在「要发布的版本号」里填比如 `1.0.0` → 点绿色的「Run workflow」。大约 10 分钟后，Releases 页面就会出现 `v1.0.0`，里面附带安装包。（推送 `v` 开头的标签也能触发发布。）

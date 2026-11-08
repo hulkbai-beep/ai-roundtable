@@ -31,4 +31,6 @@
 
 ## 发布
 
-推送到 main 会触发 `.github/workflows/build.yml`：Linux 和 Windows 上跑测试，在 Windows 上打包、测试打包结果、上传安装包。推送 `vX.Y.Z` 标签会自动创建 Release。改版本号时同时改 `package.json` 的 version。
+推送到 main 会触发 `.github/workflows/build.yml`：Linux 和 Windows 上跑测试，在 Windows 上打包、测试打包结果、上传安装包（Actions 产物）。
+
+发布 Release 有两种方式：推送 `vX.Y.Z` 标签；或者在 Actions 页面手动运行这个工作流，填 `release` 输入（例如 `1.0.1`），工作流会在打包前用 `npm version` 改版本号，再创建标签和 Release。Claude Code 云端会话推送标签会被拒绝（HTTP 403），所以发布要由用户在 Actions 页面手动触发，不要绕过这个限制。
