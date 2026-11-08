@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>AI 圆桌</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='11' cy='12' r='8' fill='%23d97757'/%3E%3Ccircle cx='21' cy='12' r='8' fill='%234c7ff0' fill-opacity='.9'/%3E%3Ccircle cx='16' cy='21' r='8' fill='%2310a37f' fill-opacity='.9'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <svg class="logo" viewBox="0 0 32 32" aria-hidden="true">
+          <circle cx="11" cy="12" r="8" fill="var(--claude)" />
+          <circle cx="21" cy="12" r="8" fill="var(--gemini)" fill-opacity=".9" />
+          <circle cx="16" cy="21" r="8" fill="var(--gpt)" fill-opacity=".9" />
+        </svg>
+        <div class="brand-text">
+          <h1>AI 圆桌</h1>
+          <div class="members" id="members" aria-label="群成员"></div>
+        </div>
+      </div>
+      <nav class="actions">
+        <button class="icon-btn" id="btn-history" type="button" title="历史对话" aria-label="历史对话">
+          <svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7" /><path d="M3 4v4h4" /><path d="M12 7v5l3 2" /></svg>
+        </button>
+        <button class="icon-btn" id="btn-export" type="button" title="导出为 Markdown" aria-label="导出为 Markdown">
+          <svg viewBox="0 0 24 24"><path d="M12 4v11" /><path d="m7 10 5 5 5-5" /><path d="M5 20h14" /></svg>
+        </button>
+        <button class="icon-btn" id="btn-new" type="button" title="新对话" aria-label="新对话">
+          <svg viewBox="0 0 24 24"><path d="M12 5v14" /><path d="M5 12h14" /></svg>
+        </button>
+        <button class="icon-btn" id="btn-settings" type="button" title="设置" aria-label="设置">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" /></svg>
+        </button>
+      </nav>
+    </header>
+
+    <div class="conn-banner hidden" id="conn-banner" role="status">与本地服务断开了，正在重连…（如果关掉了黑色的命令行窗口，请重新双击 start.bat）</div>
+
+    <main class="chat" id="chat">
+      <div class="chat-inner">
+        <section class="welcome hidden" id="welcome">
+          <div class="hero-avatars" aria-hidden="true">
+            <span class="avatar claude">C</span><span class="avatar gemini">G</span><span class="avatar gpt">GPT</span>
+          </div>
+          <h2>把 Claude、Gemini、GPT 拉进同一个群</h2>
+          <p>你出题，它们轮流发言、互相接话。想让某一位单独回答，就用 <b>@名字</b> 点名。</p>
+          <div class="setup-tip hidden" id="setup-tip">第一次用？先点右上角的 <b>设置</b>，按提示填好 GPT 的 GitHub Token，再给每位成员点一下「保存并测试」。</div>
+          <div class="examples">
+            <button class="example" type="button" data-mode="debate" data-text="AI 会让大部分程序员失业吗？请各自先亮明立场。"><span class="tag">辩论</span>AI 会让大部分程序员失业吗？</button>
+            <button class="example" type="button" data-mode="collab" data-text="帮我规划一个 5 天的东京自由行，预算 8000 元人民币，喜欢美食和逛街。"><span class="tag">合作</span>规划 5 天东京自由行，预算 8000 元</button>
+            <button class="example" type="button" data-mode="independent" data-text="用一句话向小学生解释什么是量子纠缠。"><span class="tag">各自回答</span>用一句话给小学生解释量子纠缠</button>
+            <button class="example" type="button" data-mode="discuss" data-text="如果只能推荐一本书给 20 岁的年轻人，你们各推荐哪本？为什么？"><span class="tag">自由讨论</span>只能推荐一本书给 20 岁的人，选哪本？</button>
+          </div>
+        </section>
+        <div id="messages" aria-live="polite"></div>
+        <div id="typing" class="hidden"></div>
+      </div>
+    </main>
+
+    <footer class="composer">
+      <div class="toolbar">
+        <label class="pill" title="大家用什么方式交流">模式<select id="opt-mode"></select></label>
+        <label class="pill" title="每位成员发言几次">轮数<select id="opt-rounds">
+          <option value="1">1 轮</option><option value="2">2 轮</option><option value="3">3 轮</option><option value="4">4 轮</option><option value="5">5 轮</option>
+        </select></label>
+        <label class="pill" title="每条回复的长度">篇幅<select id="opt-length"></select></label>
+        <span class="divider" aria-hidden="true"></span>
+        <div class="mention-chips" id="mention-chips"></div>
+      </div>
+      <div class="input-box">
+        <textarea id="input" rows="2" placeholder="说点什么……  Enter 发送，Shift+Enter 换行；用 @Claude / @Gemini / @GPT 点名"></textarea>
+        <div class="input-actions">
+          <span class="queue-hint" id="queue-hint"></span>
+          <button class="btn ghost" id="btn-continue" type="button" title="不发新消息，让大家接着再聊一轮">继续聊</button>
+          <button class="btn danger hidden" id="btn-stop" type="button" title="停止当前发言和后面的排队">停止</button>
+          <button class="btn primary" id="btn-send" type="button" disabled>发送</button>
+        </div>
+      </div>
+    </footer>
+  </div>
+
+  <div class="modal hidden" id="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+    <div class="dialog wide">
+      <header class="dialog-head">
+        <h2 id="settings-title">设置</h2>
+        <button class="icon-btn" type="button" data-close aria-label="关闭">
+          <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18" /></svg>
+        </button>
+      </header>
+      <div class="dialog-body" id="settings-body"></div>
+      <footer class="dialog-foot">
+        <span class="muted" id="settings-status"></span>
+        <button class="btn ghost" type="button" data-close>取消</button>
+        <button class="btn primary" type="button" id="btn-save-settings">保存</button>
+      </footer>
+    </div>
+  </div>
+
+  <div class="modal hidden" id="history-modal" role="dialog" aria-modal="true" aria-labelledby="history-title">
+    <div class="dialog">
+      <header class="dialog-head">
+        <h2 id="history-title">历史对话</h2>
+        <button class="icon-btn" type="button" data-close aria-label="关闭">
+          <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18" /></svg>
+        </button>
+      </header>
+      <div class="dialog-body" id="history-body"></div>
+    </div>
+  </div>
+
+  <div class="toast hidden" id="toast" role="status" aria-live="polite"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
