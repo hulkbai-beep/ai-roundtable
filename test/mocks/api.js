@@ -14,10 +14,16 @@ function startMockApi() {
         res.end(JSON.stringify(obj));
       };
       if (req.url === '/catalog/models') {
-        return send(200, [
-          { id: 'openai/gpt-4.1', name: 'OpenAI GPT-4.1', publisher: 'OpenAI', rate_limit_tier: 'high' },
+        const models = [
           { id: 'meta/llama-x', name: 'Llama', publisher: 'Meta', rate_limit_tier: 'low' },
-        ]);
+          { id: 'openai/gpt-4.1', name: 'OpenAI GPT-4.1', publisher: 'OpenAI', rate_limit_tier: 'high' },
+        ];
+        if (mode === 'catalog-envelope') return send(200, { data: models });
+        if (mode === 'catalog-text') {
+          res.writeHead(200, { 'content-type': 'text/plain' });
+          return res.end('OK');
+        }
+        return send(200, models);
       }
       if (req.url === '/inference/chat/completions') {
         if (req.headers.authorization !== 'Bearer good-token') return send(401, { error: { message: 'Bad credentials' } });

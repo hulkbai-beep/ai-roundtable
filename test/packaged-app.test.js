@@ -6,7 +6,7 @@
 //   xvfb-run -a node test/packaged-app.test.js -- node_modules/electron/dist/electron --no-sandbox .
 //
 // 1. 冒烟测试：窗口能打开、界面能显示
-// 2. 用模拟的 claude / agy / 接口跑一轮真实的群聊
+// 2. 用模拟的 claude / agy / codex 跑一轮真实的群聊
 // 3. （Windows）电脑上没有装 Node.js 时，npm 装的命令行工具也能靠桌面版自带的 Node 运行
 
 const { test, after } = require('node:test');
@@ -14,7 +14,6 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
-const { startMockApi } = require('./mocks/api');
 const { IS_WIN, tmpDir, makeMockBins, client, waitFor, sendAndWait, aiMessages, sleep } = require('./helpers');
 
 const sep = process.argv.indexOf('--');
@@ -87,14 +86,10 @@ test('冒烟测试：窗口打开，界面正常显示', async () => {
 });
 
 test('桌面版里跑一轮完整的群聊（模拟的 AI）', async () => {
-  const api = await startMockApi();
   const bin = makeMockBins(tmpDir('rt-pkg-bin-'));
   const env = { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}` };
   const { app, c } = await startAppWithMocks(env, 39391);
   try {
-    await c.post('/api/config', {
-      members: { gpt: { 'github-models': { token: 'good-token', baseUrl: `http://127.0.0.1:${api.port}/inference` } } },
-    });
     const s = await sendAndWait(c, { text: '桌面版测试："引号"和换行\n第二行', rounds: 1 }, 60000);
     const ai = aiMessages(s);
     assert.deepStrictEqual(
@@ -103,10 +98,9 @@ test('桌面版里跑一轮完整的群聊（模拟的 AI）', async () => {
     );
     assert.ok(ai[0].text.startsWith('MOCK-CLAUDE'), ai[0].text);
     assert.ok(ai[1].text.startsWith('MOCK-AGY'), ai[1].text);
-    assert.ok(ai[2].text.startsWith('MOCK-GPT'), ai[2].text);
+    assert.ok(ai[2].text.startsWith('MOCK-CODEX'), ai[2].text);
   } finally {
     kill(app);
-    await api.close();
     await sleep(1000);
   }
 });
@@ -121,7 +115,7 @@ test('Windows：电脑上没装 Node.js 时，npm 装的命令行工具也能用
   const env = { ...process.env, PATH: `${bin};${pathWithoutNode}`, AI_ROUNDTABLE_NO_PATH_REFRESH: '1' };
   const { app, c } = await startAppWithMocks(env, 39392);
   try {
-    for (const id of ['claude', 'gemini']) {
+    for (const id of ['claude', 'gemini', 'gpt']) {
       const r = (await c.post(`/api/test/${id}`)).json;
       assert.ok(r.ok, `${id}: ${r.error}`);
     }

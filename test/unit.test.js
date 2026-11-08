@@ -126,6 +126,28 @@ test('人设：只列出参加的成员，合作模式最后一位负责总结�
   assert(sys.includes('你是投资人'));
 });
 
+test('配置升级：1.0.0 默认的 GitHub Models 自动换成 Codex；新装默认 Codex；明确选过的保持不变', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const { ConfigStore } = require('../lib/store');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rt-cfg-'));
+
+  const v1 = path.join(dir, 'v1.json');
+  fs.writeFileSync(v1, JSON.stringify({ version: 1, members: { gpt: { provider: 'github-models', 'github-models': { token: 'tok-1234567890ab' } } } }));
+  const a = new ConfigStore(v1).get();
+  assert.strictEqual(a.members.gpt.provider, 'codex-cli');
+  assert.strictEqual(a.members.gpt['github-models'].token, 'tok-1234567890ab', '原来的 token 要保留');
+  assert.strictEqual(JSON.parse(fs.readFileSync(v1, 'utf8')).version, 2);
+  assert.strictEqual(new ConfigStore(v1).get().members.gpt.provider, 'codex-cli');
+
+  const v2 = path.join(dir, 'v2.json');
+  fs.writeFileSync(v2, JSON.stringify({ version: 2, members: { gpt: { provider: 'github-models' } } }));
+  assert.strictEqual(new ConfigStore(v2).get().members.gpt.provider, 'github-models');
+
+  assert.strictEqual(new ConfigStore(path.join(dir, 'new.json')).get().members.gpt.provider, 'codex-cli');
+});
+
 test('小工具', () => {
   assert.deepStrictEqual(splitArgs('--effort low "a b" \'\''), ['--effort', 'low', 'a b', '']);
   assert.strictEqual(maskSecret('github_pat_1234567890abcdef'), 'gith****cdef');

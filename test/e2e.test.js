@@ -42,6 +42,15 @@ test('能找到三个命令行工具，网页能打开', async () => {
   assert.strictEqual(ping.app, 'ai-roundtable');
 });
 
+test('默认配置：GPT 用 Codex CLI', async () => {
+  const cfg = (await c.get('/api/config')).json;
+  assert.strictEqual(cfg.config.members.gpt.provider, 'codex-cli');
+  const options = Object.entries(cfg.providers)
+    .filter(([, p]) => p.member === 'gpt')
+    .map(([id]) => id);
+  assert.strictEqual(options[0], 'codex-cli', '设置里 Codex 应该排在第一个');
+});
+
 test('三位成员都能通过连接测试', async () => {
   for (const id of ['claude', 'gemini', 'gpt']) {
     const r = (await c.post(`/api/test/${id}`)).json;
@@ -73,11 +82,11 @@ test('两轮讨论：每人轮流发言，后面的人能看到前面的发言�
   assert.deepStrictEqual({ blocks: g1.blocks, hasSystem: g1.hasSystem, quote: g1.quote }, { blocks: 2, hasSystem: true, quote: true });
   assert.ok(g1.lines > 10, '多行提示词应该完整传给 agy');
 
-  const p1 = parseInfo(ai[2].text, 'MOCK-GPT');
-  assert.deepStrictEqual(p1, { model: 'openai/gpt-4.1', system: true, blocks: 3 });
+  const p1 = parseInfo(ai[2].text, 'MOCK-CODEX');
+  assert.deepStrictEqual(p1, { exec: true, sandbox: 'read-only', stdinDash: true, hasSystem: true, blocks: 3 });
 
   assert.strictEqual(parseInfo(ai[3].text, 'MOCK-CLAUDE').blocks, 4);
-  assert.strictEqual(parseInfo(ai[5].text, 'MOCK-GPT').blocks, 6);
+  assert.strictEqual(parseInfo(ai[5].text, 'MOCK-CODEX').blocks, 6);
 });
 
 test('@点名：只有被点到的人按顺序回答', async () => {
@@ -94,7 +103,7 @@ test('各自回答：看不到别人这一轮的回答', async () => {
   const s = await sendAndWait(c, { text: '用一句话解释量子纠缠', mode: 'independent', rounds: 1 });
   const ai = aiMessages(s);
   assert.strictEqual(parseInfo(ai[1].text, 'MOCK-AGY').blocks, 1);
-  assert.strictEqual(parseInfo(ai[2].text, 'MOCK-GPT').blocks, 1);
+  assert.strictEqual(parseInfo(ai[2].text, 'MOCK-CODEX').blocks, 1);
 });
 
 test('停止：打断正在说话的成员，取消后面的发言', async () => {
@@ -148,26 +157,19 @@ test('旧版本命令行工具：不认识的参数会自动去掉再试', async
   process.env.MOCK_OLD_CODEX = '1';
   try {
     assert.ok((await c.post('/api/test/claude')).json.ok);
-    await c.post('/api/config', { members: { gpt: { provider: 'codex-cli' } } });
     const r = (await c.post('/api/test/gpt')).json;
     assert.ok(r.ok, r.error);
   } finally {
     delete process.env.MOCK_OLD_CLAUDE;
     delete process.env.MOCK_OLD_CODEX;
-    await c.post('/api/config', { members: { gpt: { provider: 'github-models' } } });
   }
 });
 
-test('GPT 换成 Codex CLI：只读模式，提示词从标准输入传', async () => {
-  await c.post('/api/config', { members: { gpt: { provider: 'codex-cli' } } });
-  try {
-    await c.post('/api/new');
-    const s = await sendAndWait(c, { text: '@GPT 你好' });
-    const info = parseInfo(aiMessages(s)[0].text, 'MOCK-CODEX');
-    assert.deepStrictEqual(info, { exec: true, sandbox: 'read-only', stdinDash: true, hasSystem: true });
-  } finally {
-    await c.post('/api/config', { members: { gpt: { provider: 'github-models' } } });
-  }
+test('GPT 默认用 Codex CLI：只读模式，提示词从标准输入传', async () => {
+  await c.post('/api/new');
+  const s = await sendAndWait(c, { text: '@GPT 你好' });
+  const info = parseInfo(aiMessages(s)[0].text, 'MOCK-CODEX');
+  assert.deepStrictEqual(info, { exec: true, sandbox: 'read-only', stdinDash: true, hasSystem: true, blocks: 1 });
 });
 
 test('Gemini 换成 API Key：密钥错误有提示，正确时能用', async () => {
@@ -184,28 +186,51 @@ test('Gemini 换成 API Key：密钥错误有提示，正确时能用', async ()
   }
 });
 
-test('GitHub Models：token 错误、额度用完都有提示；能加载模型列表', async () => {
-  await c.post('/api/config', { members: { gpt: { 'github-models': { token: 'wrong' } } } });
-  const bad = (await c.post('/api/test/gpt')).json;
-  assert.ok(!bad.ok && bad.error.includes('HTTP 401'));
-  await c.post('/api/config', { members: { gpt: { 'github-models': { token: 'good-token' } } } });
-  api.setMode('429');
+test('GitHub Models（备选）：能用；token 错误、额度用完都有提示；能加载模型列表', async () => {
+  await c.post('/api/config', { members: { gpt: { provider: 'github-models' } } });
   try {
+    const ok = (await c.post('/api/test/gpt')).json;
+    assert.ok(ok.ok, ok.error);
+    assert.strictEqual(ok.model, 'openai/gpt-4.1');
+
+    await c.post('/api/config', { members: { gpt: { 'github-models': { token: 'wrong' } } } });
+    const bad = (await c.post('/api/test/gpt')).json;
+    assert.ok(!bad.ok && bad.error.includes('HTTP 401'));
+    await c.post('/api/config', { members: { gpt: { 'github-models': { token: 'good-token' } } } });
+
+    api.setMode('429');
     const limited = (await c.post('/api/test/gpt')).json;
     assert.ok(!limited.ok && limited.hint.includes('额度'));
+
+    api.setMode('ok');
+    const list = (await c.post('/api/github-models')).json;
+    assert.strictEqual(list.items[0].id, 'openai/gpt-4.1', 'OpenAI 的模型排在前面');
+
+    api.setMode('catalog-envelope');
+    const wrapped = (await c.post('/api/github-models')).json;
+    assert.strictEqual(wrapped.items.length, 2, '包了一层 {data: [...]} 的列表也要能读');
+
+    api.setMode('catalog-text');
+    const weird = await c.post('/api/github-models');
+    assert.strictEqual(weird.status, 400);
+    assert.ok(weird.json.error.includes('格式看不懂') && weird.json.error.includes('OK'), weird.json.error);
+    assert.ok(!weird.json.error.includes('HTTP 200'), '成功的响应不应该报“请求失败（HTTP 200）”');
   } finally {
     api.setMode('ok');
+    await c.post('/api/config', { members: { gpt: { provider: 'codex-cli' } } });
   }
-  const list = (await c.post('/api/github-models')).json;
-  assert.strictEqual(list.items[0].id, 'openai/gpt-4.1');
 });
 
 test('密钥：界面上只显示打码后的值，不重新填写时保持不变', async () => {
-  const cfg = (await c.post('/api/config', { members: { gpt: { 'github-models': { token: '' } } } })).json;
-  const gh = cfg.config.members.gpt['github-models'];
-  assert.strictEqual(gh.tokenSet, true);
-  assert.ok(!JSON.stringify(cfg).includes('good-token'), '完整的 token 不应该出现在接口返回里');
-  assert.ok((await c.post('/api/test/gpt')).json.ok);
+  const cfg = (await c.post('/api/config', { members: { gpt: { provider: 'github-models', 'github-models': { token: '' } } } })).json;
+  try {
+    const gh = cfg.config.members.gpt['github-models'];
+    assert.strictEqual(gh.tokenSet, true);
+    assert.ok(!JSON.stringify(cfg).includes('good-token'), '完整的 token 不应该出现在接口返回里');
+    assert.ok((await c.post('/api/test/gpt')).json.ok);
+  } finally {
+    await c.post('/api/config', { members: { gpt: { provider: 'codex-cli' } } });
+  }
 });
 
 test('安全：拒绝其他网站和非本机 Host 的请求', async () => {

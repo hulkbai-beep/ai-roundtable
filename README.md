@@ -6,7 +6,7 @@
 |---|---|---|
 | Claude | Claude Code 命令行（`claude`） | 你的 Claude Max 订阅 |
 | Gemini | Antigravity CLI 命令行（`agy`） | 你的 Google AI Pro 订阅 |
-| GPT | GitHub Models 接口 | GitHub 账号自带的免费额度（不需要 ChatGPT 订阅） |
+| GPT | Codex CLI 命令行（`codex`） | 你的 ChatGPT 账号，免费账号也能用（不需要 ChatGPT 订阅） |
 
 ---
 
@@ -48,22 +48,30 @@ winget install Google.AntigravityCLI
 
 装好后运行一次 `agy`，用**开通了 AI Pro 的 Google 账号**登录，然后退出。
 
-### 3. GPT：创建 GitHub Token（免费）
+### 3. GPT：安装并登录 Codex CLI（免费）
 
-1. 打开 https://github.com/settings/personal-access-tokens/new （Fine-grained token）
-2. **Token name** 随便填，比如 `ai-roundtable`；**Expiration** 选一个有效期。
-3. 在权限（Permissions）里找到 **Models**，设为 **Read-only**。
-4. 点 **Generate token**，复制以 `github_pat_` 开头的那串字符，等下粘贴到 AI 圆桌的设置里。
+先在 PowerShell 里检查一下是不是已经装过：
 
-免费额度大约每天几十到一百多次请求，每次请求最多约 8000 token，具体以 GitHub 官方说明为准。
+```powershell
+where.exe codex
+```
+
+能看到类似 `C:\Users\你的用户名\AppData\Roaming\npm\codex.cmd` 的路径，就说明装好了，跳到最后一步登录。没装的话，先安装 Node.js（https://nodejs.org 下载 LTS 版），再运行：
+
+```powershell
+npm i -g @openai/codex
+```
+
+最后运行一次 `codex`，选择用 **ChatGPT 账号**登录（免费账号也可以），登录成功后退出。
+
+> OpenAI 目前允许免费的 ChatGPT 账号使用 Codex，但额度比较小，也可能只是限时开放。哪天用不了了，可以把 GPT 换成「GitHub Models」，同样免费，步骤见下面「常见问题」。
 
 ---
 
 ## 三、第一次设置
 
 1. 打开 AI 圆桌，点右上角的齿轮「设置」。
-2. 在 GPT 卡片里，把 GitHub Token 粘贴进去。
-3. 给每位成员点一下「保存并测试」，看到 **✓ 连上了** 就说明能用。
+2. 给每位成员点一下「保存并测试」，看到 **✓ 连上了** 就说明能用。命令行工具的输入框下面会显示「已找到：…」，说明 AI 圆桌找到了它们。
 
 ---
 
@@ -92,7 +100,8 @@ winget install Google.AntigravityCLI
 - **找不到命令**：刚装完的话，关掉 AI 圆桌再重新打开；还不行就在设置里填 `.exe` 的完整路径（比如 `C:\Users\你的用户名\.local\bin\claude.exe`）。
 - **Claude 提示登录 / 认证问题**：在 PowerShell 里运行一次 `claude` 重新登录。
 - **Gemini（agy）没有输出或者一直超时**：有用户反馈 agy 被别的程序调用时可能卡住。先确认 agy 是最新版本；还不行的话，在设置里把 Gemini 的接入方式换成「Gemini API Key」。这需要在 Google AI Studio（https://aistudio.google.com）申请 API Key，而且**不走 AI Pro 订阅**，费用和免费额度以官网为准。
-- **GPT 报 401**：Token 不对或过期。**403**：Token 没给 Models 权限。**429**：今天的免费额度用完了，或者请求太频繁。**模型不存在**：在设置里点「加载可用模型」换一个。
+- **GPT（Codex）提示登录问题**：在 PowerShell 里运行一次 `codex` 重新登录。**提示额度用完**：免费账号的额度比较小，过一阵再试，或者暂时换成 GitHub Models。
+- **Codex 回复比较慢**：在设置里勾选「显示高级选项」，在 GPT 的「额外命令行参数」里填 `-c model_reasoning_effort=low`，让它少想一点、回复快一些。
 
 **连不上 GitHub / Google 的接口？** 如果你平时要开代理（比如 Clash），在设置里填代理地址，例如 `http://127.0.0.1:7890`。
 
@@ -100,7 +109,12 @@ winget install Google.AntigravityCLI
 
 **想换一种方式接 GPT？** 设置里 GPT 的接入方式还可以选：
 
-- **Codex CLI**：用免费的 ChatGPT 账号登录。先运行 `npm i -g @openai/codex`，再运行一次 `codex` 登录。OpenAI 目前允许免费账号用 Codex，但额度很小，也可能只是限时开放。
+- **GitHub Models（免费）**：用 GitHub 账号自带的免费额度。
+  1. 打开 https://github.com/settings/personal-access-tokens/new （Fine-grained token），Token name 随便填，选一个有效期。
+  2. 在权限（Permissions）里找到 **Models**，设为 **Read-only**，点 Generate token。
+  3. 把以 `github_pat_` 开头的 token 粘贴到设置里 GPT 卡片的「GitHub Token」，点「保存并测试」。
+
+  免费额度大约每天几十到一百多次请求，每次请求最多约 8000 token。报 401 是 token 不对或过期，403 是没给 Models 权限，429 是今天的额度用完了。
 - **自定义 OpenAI 兼容接口**：比如 OpenRouter，或者本机 Ollama 跑的开源模型（接口地址 `http://localhost:11434/v1`）。
 
 **额度怎么算？** 每次发言都会把聊天记录发给对应的 AI，聊得越久越耗额度。Claude 和 Gemini 用的是你的订阅额度，和你平时在网页、App 上的用量是同一份。轮数开得越多，消耗越快。
@@ -112,7 +126,7 @@ winget install Google.AntigravityCLI
 ## 六、数据和隐私
 
 - 程序只在你的电脑上运行，只接受本机（127.0.0.1）的访问，局域网里的其他设备连不上。
-- 设置、聊天记录和日志保存在 `%APPDATA%\AI Roundtable`（菜单「文件」→「打开数据文件夹」）。GitHub Token 等设置保存在其中的 `config.json`（明文），不要发给别人。卸载程序时这些数据会保留。
+- 设置、聊天记录和日志保存在 `%APPDATA%\AI Roundtable`（菜单「文件」→「打开数据文件夹」）。API Key、Token 等设置保存在其中的 `config.json`（明文），不要发给别人。卸载程序时这些数据会保留。
 - 三个命令行工具都在数据目录里一个空的 `workspace` 文件夹里运行。Claude 的工具被关掉了，Codex 是只读模式，另外也会要求它们只聊天、不读写文件、不运行命令。
 
 ---

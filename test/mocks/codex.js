@@ -12,7 +12,13 @@ process.stdin.setEncoding('utf8');
 process.stdin.on('data', (d) => (input += d));
 process.stdin.on('end', () => {
   process.stderr.write('Reading prompt from stdin...\n');
-  const info = { exec: args[0] === 'exec', sandbox: args[args.indexOf('--sandbox') + 1], stdinDash: args[args.length - 1] === '-', hasSystem: input.includes('你是 GPT') };
+  const info = {
+    exec: args[0] === 'exec',
+    sandbox: args[args.indexOf('--sandbox') + 1],
+    stdinDash: args[args.length - 1] === '-',
+    hasSystem: input.includes('你是 GPT'),
+    blocks: (input.match(/^【[^】\n]+】$/gm) || []).length,
+  };
   const text = input.includes('请只回复两个字') ? '在线' : `MOCK-CODEX ${JSON.stringify(info)}`;
   if (o >= 0) fs.writeFileSync(args[o + 1], text);
   console.log(text);
