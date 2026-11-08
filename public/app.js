@@ -3,6 +3,10 @@
 (() => {
   const $ = (s, root = document) => root.querySelector(s);
 
+  // 桌面版（Electron）和浏览器版共用这一份界面
+  const DESKTOP = /Electron\//.test(navigator.userAgent);
+  const RESTART_HINT = DESKTOP ? '请关掉 AI 圆桌再重新打开' : '确认黑色的命令行窗口还开着；关掉了就重新双击 start.bat';
+
   const AVATAR_TEXT = { claude: 'C', gemini: 'G', gpt: 'GPT', user: '我' };
   const NAMES = { claude: 'Claude', gemini: 'Gemini', gpt: 'GPT' };
   const SECRET_KEYS = ['token', 'apiKey'];
@@ -65,7 +69,7 @@
       res = await fetch(path, opts);
     } catch {
       const e = new Error('连不上本地服务');
-      e.hint = '确认黑色的命令行窗口还开着；关掉了就重新双击 start.bat';
+      e.hint = RESTART_HINT;
       throw e;
     }
     const data = await res.json().catch(() => ({}));
@@ -766,6 +770,8 @@
   // ---------- 绑定事件 ----------
 
   function init() {
+    if (DESKTOP) document.documentElement.classList.add('desktop');
+    $('#conn-banner').textContent = `与本地服务断开了，正在重连……（${RESTART_HINT}）`;
     const ta = $('#input');
     ta.addEventListener('input', () => {
       autosize();

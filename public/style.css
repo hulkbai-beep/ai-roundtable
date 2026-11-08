@@ -101,6 +101,20 @@ button {
   border-right: 1px solid var(--border);
 }
 
+/* 桌面版：铺满窗口，内容列居中 */
+.desktop .app {
+  max-width: none;
+  border-left: 0;
+  border-right: 0;
+}
+
+.desktop .chat-inner,
+.desktop .composer > * {
+  max-width: 1040px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
 .topbar {
   display: flex;
   align-items: center;

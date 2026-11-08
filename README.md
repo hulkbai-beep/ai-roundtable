@@ -1,6 +1,6 @@
 # AI 圆桌
 
-把 Claude、Gemini、GPT 拉进同一个群聊：你出题，它们轮流发言、互相接话。程序完全在你自己的电脑上运行，界面在浏览器里打开。
+把 Claude、Gemini、GPT 拉进同一个群聊：你出题，它们轮流发言、互相接话。程序完全在你自己的电脑上运行。
 
 | 成员 | 默认接入方式 | 用的是 |
 |---|---|---|
@@ -10,14 +10,19 @@
 
 ---
 
-## 一、准备工作（只需要做一次）
+## 一、安装 AI 圆桌
 
-### 1. 安装 Node.js
+1. 打开本仓库的 **[Releases 页面](https://github.com/hulkbai-beep/ai-roundtable/releases)**，下载最新的 `AI-Roundtable-Setup-x.y.z.exe`。
+2. 双击安装。安装包没有做代码签名，Windows 可能弹出“Windows 已保护你的电脑”，点「更多信息」→「仍要运行」。
+3. 装好后，开始菜单和桌面上会有 **AI 圆桌** 的图标。
 
-打开 https://nodejs.org ，下载 **LTS** 版本，一路“下一步”装好。
-装好后打开 PowerShell，输入 `node -v`，看到 `v18` 或更高的版本号就可以了。
+> 想看最新的开发版：仓库的 Actions 页面 → 最近一次成功的「测试和打包」→ 页面底部的 `AI-Roundtable-Windows`（下载下来是一个 zip，里面是安装包）。
 
-### 2. Claude：安装并登录 Claude Code
+---
+
+## 二、准备三位成员（只需要做一次）
+
+### 1. Claude：安装并登录 Claude Code
 
 已经在用 Claude Code 的话可以跳过。打开 PowerShell，运行：
 
@@ -27,7 +32,7 @@ irm https://claude.ai/install.ps1 | iex
 
 装好后运行一次 `claude`，按提示用 **Max 账号**登录。登录成功后输入 `/exit` 退出。
 
-### 3. Gemini：安装并登录 Antigravity CLI
+### 2. Gemini：安装并登录 Antigravity CLI
 
 > 2026 年 6 月 18 日起，Gemini CLI 不能再用 AI Pro 订阅登录，订阅用户需要改用 Google 的 Antigravity CLI（命令叫 `agy`）。
 
@@ -43,30 +48,20 @@ winget install Google.AntigravityCLI
 
 装好后运行一次 `agy`，用**开通了 AI Pro 的 Google 账号**登录，然后退出。
 
-### 4. GPT：创建 GitHub Token（免费）
+### 3. GPT：创建 GitHub Token（免费）
 
-1. 没有 GitHub 账号就先免费注册一个：https://github.com/signup
-2. 打开 https://github.com/settings/personal-access-tokens/new （Fine-grained token）
-3. **Token name** 随便填，比如 `ai-roundtable`；**Expiration** 选一个有效期。
-4. 在权限（Permissions）里找到 **Models**，设为 **Read-only**。
-5. 点 **Generate token**，复制以 `github_pat_` 开头的那串字符，等下粘贴到圆桌的设置里。
+1. 打开 https://github.com/settings/personal-access-tokens/new （Fine-grained token）
+2. **Token name** 随便填，比如 `ai-roundtable`；**Expiration** 选一个有效期。
+3. 在权限（Permissions）里找到 **Models**，设为 **Read-only**。
+4. 点 **Generate token**，复制以 `github_pat_` 开头的那串字符，等下粘贴到 AI 圆桌的设置里。
 
 免费额度大约每天几十到一百多次请求，每次请求最多约 8000 token，具体以 GitHub 官方说明为准。
 
 ---
 
-## 二、启动
-
-1. 把整个 `ai-roundtable` 文件夹放到一个固定位置，比如 `D:\ai-roundtable` 或桌面。
-2. 双击 **start.bat**。会弹出一个黑色窗口，浏览器会自动打开 http://127.0.0.1:3939
-3. 使用期间不要关黑色窗口，关掉它程序就退出了。
-
-> 如果 Windows 弹出“Windows 已保护你的电脑”，点「更多信息」→「仍要运行」。
-> 也可以在解压前右键 zip →「属性」→ 勾选「解除锁定」。
-
 ## 三、第一次设置
 
-1. 点右上角的齿轮「设置」。
+1. 打开 AI 圆桌，点右上角的齿轮「设置」。
 2. 在 GPT 卡片里，把 GitHub Token 粘贴进去。
 3. 给每位成员点一下「保存并测试」，看到 **✓ 连上了** 就说明能用。
 
@@ -94,7 +89,7 @@ winget install Google.AntigravityCLI
 
 **某位成员测试失败？** 先看红字里的“建议”。常见原因：
 
-- **找不到命令**：刚装完的话，关掉黑色窗口再重新双击 start.bat；还不行就在设置里填 `.exe` 的完整路径。
+- **找不到命令**：刚装完的话，关掉 AI 圆桌再重新打开；还不行就在设置里填 `.exe` 的完整路径（比如 `C:\Users\你的用户名\.local\bin\claude.exe`）。
 - **Claude 提示登录 / 认证问题**：在 PowerShell 里运行一次 `claude` 重新登录。
 - **Gemini（agy）没有输出或者一直超时**：有用户反馈 agy 被别的程序调用时可能卡住。先确认 agy 是最新版本；还不行的话，在设置里把 Gemini 的接入方式换成「Gemini API Key」。这需要在 Google AI Studio（https://aistudio.google.com）申请 API Key，而且**不走 AI Pro 订阅**，费用和免费额度以官网为准。
 - **GPT 报 401**：Token 不对或过期。**403**：Token 没给 Models 权限。**429**：今天的免费额度用完了，或者请求太频繁。**模型不存在**：在设置里点「加载可用模型」换一个。
@@ -110,20 +105,35 @@ winget install Google.AntigravityCLI
 
 **额度怎么算？** 每次发言都会把聊天记录发给对应的 AI，聊得越久越耗额度。Claude 和 Gemini 用的是你的订阅额度，和你平时在网页、App 上的用量是同一份。轮数开得越多，消耗越快。
 
+**出了问题想看日志？** 菜单「文件」→「打开日志」（按 Alt 键显示菜单）。把日志里的报错发给开发者就行。
+
 ---
 
-## 六、隐私说明
+## 六、数据和隐私
 
 - 程序只在你的电脑上运行，只接受本机（127.0.0.1）的访问，局域网里的其他设备连不上。
-- 聊天记录保存在 `data` 文件夹；GitHub Token 等设置保存在 `config.json`（明文）。不要把这两样发给别人。
-- 三个命令行工具都在 `workspace` 这个空文件夹里运行。Claude 的工具被关掉了，Codex 是只读模式，另外也会要求它们只聊天、不读写文件、不运行命令。
+- 设置、聊天记录和日志保存在 `%APPDATA%\AI Roundtable`（菜单「文件」→「打开数据文件夹」）。GitHub Token 等设置保存在其中的 `config.json`（明文），不要发给别人。卸载程序时这些数据会保留。
+- 三个命令行工具都在数据目录里一个空的 `workspace` 文件夹里运行。Claude 的工具被关掉了，Codex 是只读模式，另外也会要求它们只聊天、不读写文件、不运行命令。
 
-## 文件说明
+---
 
-| 文件 | 作用 |
+## 七、开发者说明
+
+| 路径 | 作用 |
 |---|---|
-| `start.bat` | 双击启动 |
-| `server.js`、`lib/` | 本地服务和调度逻辑 |
-| `lib/prompt.js` | 群聊规则（AI 的“人设”），想调整说话风格可以改这里 |
-| `public/` | 网页界面 |
-| `config.json`、`data/`、`workspace/` | 第一次运行后自动生成 |
+| `electron/main.js` | 桌面版入口：启动本地服务，在窗口里显示界面 |
+| `server.js`、`start.bat` | 浏览器版入口：不装桌面版也能用（需要 Node.js 18+） |
+| `lib/` | 后台：调度谁发言（`orchestrator.js`）、三家的接入方式（`providers.js`）、Windows 上启动命令行工具（`spawn.js`） |
+| `lib/prompt.js` | 群聊规则（AI 的“人设”），想调整说话风格改这里 |
+| `public/` | 网页界面，桌面版和浏览器版共用 |
+| `test/` | 自动测试，用模拟的命令行工具和接口，不会真的调用 AI |
+
+```bash
+npm install            # 安装开发依赖（Electron 和打包工具）
+npm start              # 浏览器版
+npm run app            # 桌面版（开发模式）
+npm test               # 自动测试
+npm run dist:win       # 打包 Windows 安装包（需要在 Windows 上运行）
+```
+
+每次推送到 `main`，GitHub Actions 会在 Linux 和 Windows 上跑测试，再在 Windows 上打包安装包并测试打包结果。推送 `v` 开头的标签（比如 `v1.0.1`）会自动发布一个 Release。

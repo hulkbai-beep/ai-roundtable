@@ -1,0 +1,68 @@
+name: 测试和打包
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: 测试 (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: 安装依赖
+        run: npm ci
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+      - name: 运行测试
+        run: npm test
+
+  windows-app:
+    name: 打包 Windows 安装包
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: 安装依赖
+        run: npm ci
+      - name: 打包
+        run: npm run dist:win
+      - name: 测试打包好的桌面版
+        run: node test/packaged-app.test.js -- "dist/win-unpacked/AI Roundtable.exe"
+      - name: 上传安装包
+        uses: actions/upload-artifact@v4
+        with:
+          name: AI-Roundtable-Windows
+          path: dist/*.exe
+          if-no-files-found: error
+      - name: 发布 Release（推送 v 开头的标签时）
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/*.exe \
+            --title "AI 圆桌 $GITHUB_REF_NAME" \
+            --notes "Windows 安装包：下载下面的 AI-Roundtable-Setup-*.exe，双击安装。第一次运行如果出现“Windows 已保护你的电脑”，点「更多信息」→「仍要运行」。"

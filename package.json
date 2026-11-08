@@ -1,13 +1,66 @@
 {
   "name": "ai-roundtable",
+  "productName": "AI Roundtable",
   "version": "1.0.0",
   "private": true,
-  "description": "Local group chat for Claude, Gemini and GPT",
-  "main": "server.js",
+  "description": "让 Claude、Gemini、GPT 在同一个群里聊天",
+  "author": "hulkbai-beep",
+  "license": "UNLICENSED",
+  "homepage": "https://github.com/hulkbai-beep/ai-roundtable",
+  "main": "electron/main.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "app": "electron .",
+    "test": "node --test test/unit.test.js test/e2e.test.js test/windows.test.js",
+    "dist:win": "electron-builder --win nsis --x64 --publish never",
+    "icon": "node scripts/make-icon.js"
   },
   "engines": {
     "node": ">=18"
+  },
+  "devDependencies": {
+    "electron": "44.10.2",
+    "electron-builder": "26.18.0"
+  },
+  "build": {
+    "appId": "com.hulkbai.ai-roundtable",
+    "productName": "AI Roundtable",
+    "copyright": "Copyright © 2026 hulkbai-beep",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "electron/**",
+      "lib/**",
+      "public/**",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico",
+      "artifactName": "AI-Roundtable-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "AI 圆桌",
+      "uninstallDisplayName": "AI 圆桌",
+      "installerLanguages": [
+        "zh_CN"
+      ],
+      "language": "2052",
+      "deleteAppDataOnUninstall": false
+    }
   }
 }
