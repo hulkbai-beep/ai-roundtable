@@ -61,7 +61,7 @@ process.on('unhandledRejection', (e) => console.error('unhandledRejection', e));
 // 刚装好的 claude / agy 可能还没进到当前进程的 PATH 里，这里再读一遍用户和系统的 PATH。
 
 function refreshWindowsPath() {
-  if (process.platform !== 'win32') return;
+  if (process.platform !== 'win32' || process.env.AI_ROUNDTABLE_NO_PATH_REFRESH) return;
   const read = (key) => {
     try {
       const out = execFileSync('reg', ['query', key, '/v', 'Path'], { encoding: 'utf8', windowsHide: true, timeout: 4000 });

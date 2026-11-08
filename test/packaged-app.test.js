@@ -117,7 +117,8 @@ test('Windows：电脑上没装 Node.js 时，npm 装的命令行工具也能用
     .split(';')
     .filter((d) => d && !fs.existsSync(path.join(d, 'node.exe')))
     .join(';');
-  const env = { ...process.env, PATH: `${bin};${pathWithoutNode}` };
+  // 不让桌面版从注册表把带 node 的 PATH 补回来，这样才测得到“没有 Node.js”的情况
+  const env = { ...process.env, PATH: `${bin};${pathWithoutNode}`, AI_ROUNDTABLE_NO_PATH_REFRESH: '1' };
   const { app, c } = await startAppWithMocks(env, 39392);
   try {
     for (const id of ['claude', 'gemini']) {

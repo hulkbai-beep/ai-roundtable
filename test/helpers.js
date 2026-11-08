@@ -23,7 +23,11 @@ function makeBin(dir, name, script, style = 'npm') {
   if (IS_WIN) {
     let text;
     if (style === 'npm') {
-      const rel = path.relative(dir, script);
+      // 和 npm 一样：脚本放进 node_modules，.cmd 用相对路径指向它（脚本和 .cmd 可能不在同一个盘）
+      const pkgDir = path.join(dir, 'node_modules', `mock-${name}`);
+      fs.mkdirSync(pkgDir, { recursive: true });
+      fs.copyFileSync(script, path.join(pkgDir, path.basename(script)));
+      const rel = `node_modules\\mock-${name}\\${path.basename(script)}`;
       text = [
         '@ECHO off',
         'GOTO start',
