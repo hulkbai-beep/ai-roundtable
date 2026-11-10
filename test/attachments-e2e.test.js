@@ -263,6 +263,24 @@ test('文件被删掉以后不再发送，并告诉 AI 这次看不到', async (
   assert.deepStrictEqual({ files: cl.files, tools: cl.tools, attachments: cl.attachments }, { files: undefined, tools: '', attachments: 1 }, '附件还列在提示词里（注明没发），但不再给文件');
   assert.strictEqual(parseInfo(last(s, 'gpt').text, 'MOCK-CODEX').images, undefined);
   assert.strictEqual((await c.get(`/api/file/${img.file}`)).status, 404);
+  // 回复上注明是文件不在了（调大字数上限也没用，所以不提设置）
+  const note = '附件 1（会被删掉.png） 的文件已经不在了，这次没有带上';
+  assert.strictEqual(last(s, 'claude').meta.note, note);
+  assert.strictEqual(last(s, 'gpt').meta.note, note);
+
+  // 文档取出来的文字不在了，也是同样的说明，而不是“篇幅不够”
+  const doc = await upload('笔记.txt', Buffer.from('一些笔记'));
+  fs.rmSync(path.join(attachDir(), `${doc.id}-text.txt`));
+  await setMembers({ gpt: { provider: 'github-models' } });
+  try {
+    s = await sendAndWait(c, { text: '@GPT 还有这个', attachments: [doc.id] });
+    assert.strictEqual(last(s, 'gpt').meta.note, '附件 1（会被删掉.png）、附件 2（笔记.txt） 的文件已经不在了，这次没有带上');
+    const sent = api.requests[api.requests.length - 1].body.messages.find((m) => m.role === 'user').content;
+    assert.strictEqual(typeof sent, 'string');
+    assert.ok(sent.includes('<附件 编号="1" 文件名="会被删掉.png" 说明="图片，文件已经不在了，你看不到" />\n\n<附件 编号="2" 文件名="笔记.txt" 说明="文档，保存的内容已经不在了，你看不到" />'), sent);
+  } finally {
+    await setMembers({ gpt: { provider: 'codex-cli' } });
+  }
 });
 
 test('太长的文档：命令行工具自己去读完整的文字，HTTP 接口注明只看到了开头', async () => {
@@ -287,13 +305,15 @@ test('太长的文档：命令行工具自己去读完整的文字，HTTP 接口
     assert.strictEqual(fs.readFileSync(textPath, 'utf8'), text);
 
     const gpt = last(s, 'gpt');
-    const shown = Math.floor(gptMax / 2);
+    // 附件这一段（说明 + 文字）最多占一半篇幅
+    const shown = Number((/只发了开头 (\d+) 字/.exec(gpt.meta.note) || [])[1]);
+    assert.ok(shown > gptMax / 2 - 200 && shown < gptMax / 2, `文档的文字应该接近一半篇幅，实际 ${shown}`);
     assert.strictEqual(gpt.meta.note, `附件 1（长文档.txt） 太长，只发了开头 ${shown} 字，可在设置里调大字数上限`);
     const sent = api.requests[api.requests.length - 1].body.messages.find((m) => m.role === 'user').content;
     assert.strictEqual(typeof sent, 'string', '没有图片时还是普通的文字消息');
     assert.ok(sent.includes(`<附件 编号="1" 文件名="长文档.txt" 说明="文档，共约 ${text.length} 字，下面只有开头的 ${shown} 字">\n${text.slice(0, shown)}\n</附件>`));
     assert.ok(!sent.includes('完整的文字'), 'HTTP 接口读不了文件，不提文件');
-    assert.ok(sent.length < gptMax + 1500, `提示词应该控制在字数上限附近，实际 ${sent.length}`);
+    assert.ok(sent.length < gptMax + 300, `提示词应该控制在字数上限以内（另加几句固定的话），实际 ${sent.length}`);
   } finally {
     await setMembers({ gpt: { provider: 'codex-cli' } });
   }
@@ -352,21 +372,24 @@ test('HTTP 接口不接受图片时：去掉文件重试，告诉 AI 它看不�
     const scan = await upload('scan.pdf', SCAN);
     const from = api.requests.length;
     const s = await sendAndWait(c, { text: '@GPT @Gemini 图里是什么', attachments: [img.id, scan.id] });
-    const note = '对方不接受图片 / PDF，附件 1（截图.png）、附件 2（scan.pdf） 没能发过去';
-    assert.strictEqual(last(s, 'gpt').meta.note, note);
-    assert.strictEqual(last(s, 'gemini').meta.note, note);
+    const note = '附件 1（截图.png）、附件 2（scan.pdf） 没能发过去：带上以后请求被对方拒绝了（对方的说明：';
+    assert.strictEqual(last(s, 'gpt').meta.note, `${note}Invalid content type. image_url is only supported by certain models.）`);
+    assert.strictEqual(last(s, 'gemini').meta.note, `${note}Unable to process input image. Please retry or report in https://developers.generativeai.google/guide/troubleshooting）`);
     assert.deepStrictEqual(s.messages.filter((m) => m.speaker === 'system'), [], '不算出错');
 
+    // 每家三次请求：全带上 → 只带图片 → 什么文件都不带
     const reqs = api.requests.slice(from);
-    assert.strictEqual(reqs.length, 4, '每家各重试一次');
+    assert.strictEqual(reqs.length, 6);
+    const userOf = (r) => r.body.messages.find((m) => m.role === 'user').content;
+    assert.deepStrictEqual(userOf(reqs[0]).map((p) => p.type), ['text', 'text', 'image_url', 'text', 'file']);
+    assert.deepStrictEqual(userOf(reqs[1]).map((p) => p.type), ['text', 'text', 'image_url']);
+    assert.ok(userOf(reqs[1])[0].text.endsWith('（注意：附件 2（scan.pdf） 的文件没能发给你，你看不到里面的内容。需要看了才能回答的话，请直接说明你看不到。）'));
     const warning = '（注意：附件 1（截图.png）、附件 2（scan.pdf） 的文件没能发给你，你看不到里面的内容。需要看了才能回答的话，请直接说明你看不到。）';
-    const retry = reqs[1].body.messages.find((m) => m.role === 'user').content;
-    assert.ok(Array.isArray(reqs[0].body.messages.find((m) => m.role === 'user').content));
+    const retry = userOf(reqs[2]);
     assert.strictEqual(typeof retry, 'string');
     assert.ok(retry.endsWith(warning), retry.slice(-200));
-    const geminiRetry = reqs[3].body.contents[0].parts;
-    assert.strictEqual(geminiRetry.length, 1);
-    assert.ok(geminiRetry[0].text.endsWith(warning));
+    assert.deepStrictEqual(reqs.slice(3).map((r) => r.body.contents[0].parts.length), [5, 3, 1]);
+    assert.ok(reqs[5].body.contents[0].parts[0].text.endsWith(warning));
   } finally {
     api.setMode('ok');
     await setMembers({ gpt: { provider: 'codex-cli' }, gemini: { provider: 'agy-cli' } });
@@ -382,9 +405,9 @@ test('带上文件后请求太大、接口报 429 时：去掉文件重试，不
     const from = api.requests.length;
     let s = await sendAndWait(c, { text: '@GPT @Gemini 看图', attachments: [img.id] });
     assert.deepStrictEqual(s.messages.filter((m) => m.speaker === 'system'), [], JSON.stringify(s.messages.filter((m) => m.speaker === 'system')));
-    const note = '对方不接受图片 / PDF，附件 1（大图.png） 没能发过去';
-    assert.strictEqual(last(s, 'gpt').meta.note, note);
-    assert.strictEqual(last(s, 'gemini').meta.note, note);
+    const note = '附件 1（大图.png） 没能发过去：带上以后请求被对方拒绝了（对方的说明：';
+    assert.strictEqual(last(s, 'gpt').meta.note, `${note}Request too large for this model on tokens per min (TPM): Limit 30000, Requested 45210.）`);
+    assert.strictEqual(last(s, 'gemini').meta.note, `${note}Quota exceeded for metric: generate_content_free_tier_input_token_count, limit: 250000.）`);
     assert.strictEqual(api.requests.length - from, 4);
     assert.deepStrictEqual(s.members.map((m) => m.limited), [null, null, null], '没有人被标成“额度用完”');
     // 真的额度用完（不带文件也是 429）时，照样按额度用完处理
@@ -400,6 +423,135 @@ test('带上文件后请求太大、接口报 429 时：去掉文件重试，不
   } finally {
     api.setMode('ok');
     await setMembers({ gpt: { provider: 'codex-cli' }, gemini: { provider: 'agy-cli' } });
+  }
+});
+
+test('接口只是不收 PDF 时：图片照样发过去，只注明 PDF 没发', async () => {
+  await setMembers({ gpt: { provider: 'github-models' }, gemini: { provider: 'gemini-api' } });
+  api.setMode('no-pdf');
+  try {
+    await c.post('/api/new');
+    const img = await upload('照片.png', PNG);
+    let from = api.requests.length;
+    let s = await sendAndWait(c, { text: '@GPT 看图', attachments: [img.id] });
+    assert.strictEqual(last(s, 'gpt').meta.note, '');
+    assert.strictEqual(api.requests.length - from, 1, '只有图片时一次就成');
+
+    const scan = await upload('合同扫描件.pdf', SCAN);
+    const userOf = (r) => r.body.messages.find((m) => m.role === 'user').content;
+    const warning = '（注意：附件 2（合同扫描件.pdf） 的文件没能发给你，你看不到里面的内容。需要看了才能回答的话，请直接说明你看不到。）';
+    // 后面每一轮都一样：先全带上，被拒绝后去掉 PDF，图片还在
+    for (const [text, attachments] of [['@GPT @Gemini 再看看这份合同', [scan.id]], ['@GPT @Gemini 图里那个人是谁', []]]) {
+      from = api.requests.length;
+      s = await sendAndWait(c, { text, attachments });
+      assert.deepStrictEqual(s.messages.filter((m) => m.speaker === 'system'), []);
+      const note = '附件 2（合同扫描件.pdf） 没能发过去：带上以后请求被对方拒绝了（对方的说明：';
+      assert.strictEqual(last(s, 'gpt').meta.note, `${note}Invalid value: 'file'. Supported values are: 'text' and 'image_url'.）`);
+      assert.strictEqual(last(s, 'gemini').meta.note, `${note}The document has no pages.）`);
+      const reqs = api.requests.slice(from);
+      assert.strictEqual(reqs.length, 4);
+      assert.deepStrictEqual(userOf(reqs[0]).map((p) => p.type), ['text', 'text', 'image_url', 'text', 'file']);
+      assert.deepStrictEqual(userOf(reqs[1]).slice(1), [
+        { type: 'text', text: '附件 1（照片.png）：' },
+        { type: 'image_url', image_url: { url: `data:image/png;base64,${b64(PNG)}` } },
+      ]);
+      assert.ok(userOf(reqs[1])[0].text.endsWith(warning));
+      const parts = reqs[3].body.contents[0].parts;
+      assert.deepStrictEqual(parts.slice(1), [{ text: '附件 1（照片.png）：' }, { inlineData: { mimeType: 'image/png', data: b64(PNG) } }]);
+      assert.ok(parts[0].text.endsWith(warning));
+    }
+  } finally {
+    api.setMode('ok');
+    await setMembers({ gpt: { provider: 'codex-cli' }, gemini: { provider: 'agy-cli' } });
+  }
+});
+
+test('接口的几种退让互不妨碍：不管对方先报哪个错，都能一步步退到能用为止', async () => {
+  await setMembers({
+    gpt: { provider: 'github-models', 'github-models': { effort: 'high' } },
+    gemini: { provider: 'gemini-api', 'gemini-api': { model: 'gemini-flash-lite-latest', effort: 'low' } },
+  });
+  try {
+    await c.post('/api/new');
+    const img = await upload('图.png', PNG);
+    // 对方先检查内容（不收图片），再检查参数（不认思考强度）
+    api.setMode('files-first');
+    let from = api.requests.length;
+    let s = await sendAndWait(c, { text: '@GPT @Gemini 看图', attachments: [img.id] });
+    assert.deepStrictEqual(s.messages.filter((m) => m.speaker === 'system'), [], JSON.stringify(s.messages.filter((m) => m.speaker === 'system')));
+    const gpt = last(s, 'gpt');
+    assert.ok(gpt.meta.note.startsWith('这个模型不支持选择思考强度，已用默认；附件 1（图.png） 没能发过去：'), gpt.meta.note);
+    assert.strictEqual(parseInfo(gpt.text, 'MOCK-GPT').effort, undefined);
+    assert.ok(last(s, 'gemini').meta.note.startsWith('这个模型不支持选择思考强度，已用默认；附件 1（图.png） 没能发过去：'), last(s, 'gemini').meta.note);
+    assert.strictEqual(api.requests.length - from, 6, '每家三次：原样 → 去掉图片 → 再去掉思考强度');
+
+    // 用 404 表示“没有能看图的模型”的接口（例如 OpenRouter）：同样去掉文件重试
+    api.setMode('no-vision-404');
+    await setMembers({ gpt: { 'github-models': { effort: '' } } });
+    from = api.requests.length;
+    s = await sendAndWait(c, { text: '@GPT 再看' });
+    assert.strictEqual(last(s, 'gpt').meta.note, '附件 1（图.png） 没能发过去：带上以后请求被对方拒绝了（对方的说明：No endpoints found that support image input）');
+    assert.strictEqual(api.requests.length - from, 2);
+
+    // 报错的文字里正好有 system 和 messages：先试了“合并 system 消息”，发现没用就改回去，再去掉文件
+    api.setMode('no-vision-system');
+    from = api.requests.length;
+    s = await sendAndWait(c, { text: '@GPT 第三次' });
+    const reqs = api.requests.slice(from);
+    assert.deepStrictEqual(
+      reqs.map((r) => r.body.messages.map((m) => `${m.role}:${Array.isArray(m.content) ? 'files' : 'text'}`).join(',')),
+      ['system:text,user:files', 'user:files', 'system:text,user:text']
+    );
+    assert.strictEqual(parseInfo(last(s, 'gpt').text, 'MOCK-GPT').system, true, '最后成功的请求里，人设还是单独的 system 消息');
+  } finally {
+    api.setMode('ok');
+    await setMembers({
+      gpt: { provider: 'codex-cli', 'github-models': { effort: '' } },
+      gemini: { provider: 'agy-cli', 'gemini-api': { model: 'gemini-flash-latest', effort: '' } },
+    });
+  }
+});
+
+test('附件很多的长对话：提示词仍然控制在字数上限以内，较早的附件不再带上并注明', async () => {
+  const cfg = (await c.get('/api/config')).json.config.members;
+  const gptMax = cfg.gpt['github-models'].maxChars;
+  const agyMax = cfg.gemini['agy-cli'].maxChars;
+  await setMembers({ gpt: { provider: 'github-models' } });
+  try {
+    await c.post('/api/new');
+    let s;
+    for (let batch = 0; batch < 5; batch++) {
+      const ids = [];
+      for (let i = 0; i < 10; i++) {
+        const k = batch * 10 + i + 1;
+        const att = k % 2 ? await upload(`第 ${k} 号 会议记录（讨论稿）.txt`, Buffer.from(`第 ${k} 份记录。${'要点很多。'.repeat(400)}`)) : await upload(`第 ${k} 号 现场照片.png`, PNG);
+        ids.push(att.id);
+      }
+      s = await sendAndWait(c, { text: `@GPT @Gemini 第 ${batch + 1} 批材料`, attachments: ids });
+      assert.deepStrictEqual(s.messages.filter((m) => m.speaker === 'system'), [], `第 ${batch + 1} 批：${JSON.stringify(s.messages.filter((m) => m.speaker === 'system'))}`);
+    }
+    // GitHub Models：一共只带 5000 字
+    const sent = api.requests[api.requests.length - 1].body.messages.find((m) => m.role === 'user').content;
+    const text = sent[0].text;
+    assert.ok(text.length < gptMax + 300, `GPT 的提示词 ${text.length} 字，上限 ${gptMax}`);
+    const images = sent.filter((p) => p.type === 'image_url').length;
+    assert.ok(images >= 4 && images <= 8, `带了 ${images} 张图片`);
+    assert.strictEqual(images, (text.match(/说明="图片" \/>/g) || []).length, '只带列出来的附件里的图片');
+    const hidden = Number((/另外 (\d+) 个较早的这次没有列出/.exec(text) || [])[1]);
+    assert.ok(hidden >= 35 && hidden < 45, `hidden = ${hidden}`);
+    const note = last(s, 'gpt').meta.note;
+    assert.ok(/^附件 \d+（第 \d+ 号 会议记录（讨论稿）.txt） 太长，只发了开头 \d+ 字；附件 \d+（[^）]+）.txt）、附件 \d+（[^）]+）.txt）、附件 \d+（[^）]+）.txt） 等 \d+ 个附件 的内容没带上（篇幅不够）；另外 \d+ 个较早的附件没有带上，可在设置里调大字数上限$/.test(note), note);
+    assert.ok(note.includes(`另外 ${hidden} 个较早的附件没有带上`));
+    assert.ok(note.length < 300, `说明不要太长：${note.length}`);
+
+    // Antigravity：整个命令行参数（人设 + 聊天记录 + 文件位置）离 Windows 的上限还远
+    const gemini = parseInfo(last(s, 'gemini').text, 'MOCK-AGY');
+    assert.ok(gemini.chars < agyMax + 2500, `agy 收到 ${gemini.chars} 字，上限 ${agyMax}`);
+    assert.strictEqual(gemini.files.filter((f) => !f.text).length, 8);
+    assert.strictEqual(gemini.files.filter((f) => f.text).length, 8);
+    assert.ok(/ 等 \d+ 个附件 的内容没带上（篇幅不够），可在设置里调大字数上限$/.test(last(s, 'gemini').meta.note), `列不下的“完整文字”文件，和读不了文件的接入方式一样注明：${last(s, 'gemini').meta.note}`);
+  } finally {
+    await setMembers({ gpt: { provider: 'codex-cli' } });
   }
 });
 
@@ -471,8 +623,11 @@ test('英文界面：附件的提示词、说明和错误都是英文', async ()
       '英文的提示词里也列出了文件的位置'
     );
     assert.strictEqual(cl.systemEn, true);
-    assert.strictEqual(last(s, 'gpt').meta.note, 'The service did not accept images / PDFs, so Attachment 1 (photo.png), Attachment 2 (scan.pdf) was not sent');
-    const retry = api.requests.slice(from)[1].body.messages.find((m) => m.role === 'user').content;
+    assert.strictEqual(
+      last(s, 'gpt').meta.note,
+      'Attachment 1 (photo.png), Attachment 2 (scan.pdf) could not be sent: the service rejected the request with them attached (it said: Invalid content type. image_url is only supported by certain models.)'
+    );
+    const retry = api.requests.slice(from)[2].body.messages.find((m) => m.role === 'user').content;
     assert.ok(retry.includes('<attachment number="1" name="photo.png" note="image" />\n\n<attachment number="2" name="scan.pdf" note="PDF, no text could be extracted, probably a scan" />'), retry);
     assert.ok(retry.includes('(Attachment 1: photo.png; Attachment 2: scan.pdf)'));
     assert.ok(retry.endsWith('(Note: the files for Attachment 1 (photo.png), Attachment 2 (scan.pdf) could not be sent to you, so you cannot see what is in them. If you need them to answer, say that you cannot see them.)'));

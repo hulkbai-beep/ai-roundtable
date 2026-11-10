@@ -28,6 +28,7 @@ function answer(prompt) {
     hasSystem: prompt.includes('你是 Gemini'),
     quote: prompt.includes('"引号"'),
     lines: prompt.split('\n').length,
+    chars: prompt.length,
     files: listedFiles(prompt),
   };
   const reply = prompt.includes('请只回复两个字') ? '在线' : `\u001b[32mMOCK-AGY\u001b[0m ${JSON.stringify(info)}`;

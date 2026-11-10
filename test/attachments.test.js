@@ -747,8 +747,9 @@ test('提示词：附件按出现的顺序编号，聊天记录里只留编号�
 });
 
 test('提示词：没有附件时什么都不加', () => {
-  assert.deepStrictEqual(buildAttachments([user('你好'), { speaker: 'gpt', text: '在' }], opts()), { text: '', used: 0, media: [], clipped: [] });
-  assert.deepStrictEqual(buildAttachments([]), { text: '', used: 0, media: [], clipped: [] });
+  const nothing = { text: '', used: 0, media: [], clipped: [], gone: [], hidden: 0 };
+  assert.deepStrictEqual(buildAttachments([user('你好'), { speaker: 'gpt', text: '在' }], opts()), nothing);
+  assert.deepStrictEqual(buildAttachments([]), nothing);
   const prompt = buildUserPrompt({ speaker: 'claude', transcript: '【用户】\n你好' });
   assert.ok(prompt.startsWith('下面是群聊记录（按时间顺序）：\n\n【用户】\n你好\n\n（以上是到目前为止的全部记录）'));
 });
@@ -773,6 +774,8 @@ test('提示词：文档的文字写进去，图片和扫描件作为文件交�
     { n: 3, name: '扫描.pdf', kind: 'pdf', mime: 'application/pdf', size: 3000, path: '/w/attachments/faaaaaa3.pdf' },
   ]);
   assert.deepStrictEqual(r.clipped, []);
+  assert.deepStrictEqual(r.gone, []);
+  assert.strictEqual(r.hidden, 0);
 
   const prompt = buildUserPrompt({ speaker: 'gpt', transcript: 'T', attachments: r.text });
   assert.ok(prompt.startsWith(`${r.text}\n\n下面是群聊记录（按时间顺序）：\n\nT\n\n`), '附件放在聊天记录前面');
@@ -797,16 +800,36 @@ test('提示词：英文界面下附件这一段是英文的', () => {
   });
 });
 
-test('提示词：文件不在了（或者这次不发）时说明看不到', () => {
-  const gone = buildAttachments([user('看看', IMG, SCAN, { ...SCAN, id: 'faaaaaa4', file: 'faaaaaa4.pdf', name: '加密.pdf', encrypted: true })], opts({ pathOf: () => null }));
+test('提示词：保存的文件不在了时，告诉 AI 看不到，并记下来好在回复上注明', () => {
+  const locked = { ...SCAN, id: 'faaaaaa4', file: 'faaaaaa4.pdf', name: '加密.pdf', encrypted: true };
+  const half = { ...SCAN, id: 'faaaaaa5', file: 'faaaaaa5.pdf', name: '半扫描.pdf', chars: 6, partial: true };
+  const messages = [user('看看', IMG, SCAN, locked, DOC, half)];
+  const gone = buildAttachments(messages, opts({ pathOf: () => null, readText: () => '' }));
   assert.deepStrictEqual(gone.media, []);
-  assert.ok(gone.text.includes('<附件 编号="1" 文件名="截图.png" 说明="图片，这次没有再发给你" />'));
-  assert.ok(gone.text.includes('<附件 编号="2" 文件名="扫描.pdf" 说明="PDF，取不出文字，多半是扫描件，文件本身这次没有发给你" />'));
-  assert.ok(gone.text.includes('<附件 编号="3" 文件名="加密.pdf" 说明="PDF，加了密，取不出文字，文件本身这次没有发给你" />'));
+  assert.ok(gone.text.includes('<附件 编号="1" 文件名="截图.png" 说明="图片，文件已经不在了，你看不到" />'));
+  assert.ok(gone.text.includes('<附件 编号="2" 文件名="扫描.pdf" 说明="PDF，取不出文字，多半是扫描件，文件本身已经不在了" />'));
+  assert.ok(gone.text.includes('<附件 编号="3" 文件名="加密.pdf" 说明="PDF，加了密，取不出文字，文件本身已经不在了" />'));
+  assert.ok(gone.text.includes('<附件 编号="4" 文件名="报告.docx" 说明="文档，保存的内容已经不在了，你看不到" />'));
+  assert.ok(gone.text.includes('<附件 编号="5" 文件名="半扫描.pdf" 说明="PDF，保存的内容已经不在了，你看不到，文件本身已经不在了" />'));
+  assert.deepStrictEqual(gone.gone, [
+    { n: 1, name: '截图.png' },
+    { n: 2, name: '扫描.pdf' },
+    { n: 3, name: '加密.pdf' },
+    { n: 4, name: '报告.docx' },
+    { n: 5, name: '半扫描.pdf' },
+  ]);
+  assert.deepStrictEqual(gone.clipped, [], '文件不在了不算“篇幅不够”：调大字数上限也没有用');
+
+  // 只是取出来的文字不在了、PDF 文件本身还在：照样把文件交出去，不算丢
+  const textOnly = buildAttachments([user('看看', half)], opts({ readText: () => '' }));
+  assert.deepStrictEqual(textOnly.gone, []);
+  assert.deepStrictEqual(textOnly.media.map((m) => m.n), [1]);
+
   inEnglish(() => {
-    const en = buildAttachments([user('look', IMG, SCAN)], opts({ pathOf: () => null })).text;
-    assert.ok(en.includes('<attachment number="1" name="截图.png" note="image, not sent to you this time" />'));
-    assert.ok(en.includes('<attachment number="2" name="扫描.pdf" note="PDF, no text could be extracted, probably a scan, the file itself was not sent to you this time" />'));
+    const en = buildAttachments(messages, opts({ pathOf: () => null, readText: () => '' })).text;
+    assert.ok(en.includes('<attachment number="1" name="截图.png" note="image, the file is no longer available, so you cannot see it" />'));
+    assert.ok(en.includes('<attachment number="2" name="扫描.pdf" note="PDF, no text could be extracted, probably a scan, the file itself is no longer available" />'));
+    assert.ok(en.includes('<attachment number="4" name="报告.docx" note="document, its saved content is no longer available, so you cannot see it" />'));
   });
 });
 
@@ -821,12 +844,13 @@ test('提示词：只取出一部分文字的 PDF，文字和文件都给', () =
 const longDoc = (id, name, chars) => ({ id, name, kind: 'doc', mime: 'text/plain', size: chars, file: `${id}.txt`, chars });
 const longText = (a) => `${a.name}:`.padEnd(a.chars, '字');
 
-test('提示词：文档最多占一半篇幅，新的优先；放不下的注明只有开头', () => {
+test('提示词：附件最多占一半篇幅，新的优先；放不下的注明只有开头', () => {
   const old = longDoc('fbbbbbb1', '旧.txt', 3000);
   const mid = longDoc('fbbbbbb2', '中.txt', 900);
   const recent = longDoc('fbbbbbb3', '新.txt', 800);
-  // 一共 2000 字的篇幅：文档占一半（1000），先给最新的 800，剩 200 给前一个，最早的一个字都放不下
-  const r = buildAttachments([user('一', old), user('二', mid), user('三', recent)], opts({ maxChars: 2000, readText: longText }));
+  // 一共 2450 字的篇幅：附件这一段占一半（1225），三个附件的说明各留 75，文字还有 1000：
+  // 先给最新的 800，剩 200 给前一个，最早的一个字都放不下
+  const r = buildAttachments([user('一', old), user('二', mid), user('三', recent)], opts({ maxChars: 2450, readText: longText }));
   assert.ok(r.text.includes('<附件 编号="1" 文件名="旧.txt" 说明="文档，篇幅有限，这次没有附上内容" />'));
   assert.ok(r.text.includes(`<附件 编号="2" 文件名="中.txt" 说明="文档，共约 900 字，下面只有开头的 200 字">\n${longText(mid).slice(0, 200)}\n</附件>`));
   assert.ok(r.text.includes(`<附件 编号="3" 文件名="新.txt" 说明="文档">\n${longText(recent)}\n</附件>`));
@@ -836,10 +860,11 @@ test('提示词：文档最多占一半篇幅，新的优先；放不下的注�
   ]);
   assert.deepStrictEqual(r.media, [], 'HTTP 接口读不了文件，不给文字文件');
   assert.strictEqual(r.used, r.text.length);
-  assert.ok(r.used < 1000 + 600, '文档的文字不超过一半篇幅（另加说明和标记）');
+  assert.ok(r.used <= 1225 + INTRO.length + 10, `整段（说明 + 文字）不超过一半篇幅，另加开头那句话；实际 ${r.used}`);
 
   inEnglish(() => {
-    const en = buildAttachments([user('一', old), user('二', mid), user('三', recent)], opts({ maxChars: 2000, readText: longText })).text;
+    // 英文的说明长一些，每个留 135
+    const en = buildAttachments([user('一', old), user('二', mid), user('三', recent)], opts({ maxChars: 2810, readText: longText })).text;
     assert.ok(en.includes('<attachment number="1" name="旧.txt" note="document, content left out this time to save space" />'));
     assert.ok(en.includes('<attachment number="2" name="中.txt" note="document, about 900 characters in total, only the first 200 are below">'));
   });
@@ -850,7 +875,8 @@ test('提示词：命令行工具可以自己读完整的文字，就把文字�
   const mid = longDoc('fbbbbbb2', '中.txt', 900);
   const recent = longDoc('fbbbbbb3', '新.txt', 800);
   const messages = [user('一', old, IMG), user('二', mid), user('三', recent)];
-  const r = buildAttachments(messages, opts({ maxChars: 2000, readText: longText, canRead: true }));
+  // 四个附件的说明留出 301，文字还是 1000
+  const r = buildAttachments(messages, opts({ maxChars: 2602, readText: longText, canRead: true }));
   assert.ok(r.text.includes('<附件 编号="1" 文件名="旧.txt" 说明="文档，篇幅有限，这次没有附上内容，完整的文字在最后列出的文件里" />'));
   assert.ok(r.text.includes('<附件 编号="3" 文件名="中.txt" 说明="文档，共约 900 字，下面只有开头的 200 字，完整的文字在最后列出的文件里">'));
   assert.deepStrictEqual(r.clipped, []);
@@ -860,13 +886,105 @@ test('提示词：命令行工具可以自己读完整的文字，就把文字�
     { n: 3, name: '中.txt', kind: 'text', mime: 'text/plain', size: 900, path: '/w/attachments/fbbbbbb2-text.txt' },
   ]);
   inEnglish(() => {
-    const en = buildAttachments(messages, opts({ maxChars: 2000, readText: longText, canRead: true })).text;
+    const en = buildAttachments(messages, opts({ maxChars: 2602, readText: longText, canRead: true })).text;
     assert.ok(en.includes('note="document, content left out this time to save space, the full text is in a file listed at the end" />'));
   });
   // 文字文件不在了：和读不了文件的接入方式一样，注明只看到开头
-  const lost = buildAttachments(messages, opts({ maxChars: 2000, readText: longText, canRead: true, pathOf: (a, which) => (which === 'text' ? null : `/w/${a.file}`) }));
+  const lost = buildAttachments(messages, opts({ maxChars: 2602, readText: longText, canRead: true, pathOf: (a, which) => (which === 'text' ? null : `/w/${a.file}`) }));
   assert.deepStrictEqual(lost.clipped.map((c) => c.n), [1, 3]);
   assert.deepStrictEqual(lost.media.map((m) => m.kind), ['image']);
+
+  // “完整文字”的文件最多列 8 个（新的优先），再多的和读不了文件的接入方式一样注明
+  const many = Array.from({ length: 11 }, (_, i) => longDoc(`fbbbbb${String(i).padStart(2, '0')}`, `${i + 1}.txt`, 5000));
+  const capped = buildAttachments([user('第一批', ...many.slice(0, 6)), user('第二批', ...many.slice(6))], opts({ maxChars: 6000, readText: longText, canRead: true }));
+  assert.deepStrictEqual(capped.media.map((m) => `${m.n}:${m.kind}`), [4, 5, 6, 7, 8, 9, 10, 11].map((n) => `${n}:text`));
+  assert.deepStrictEqual(capped.clipped.map((c) => c.n), [1, 2, 3]);
+});
+
+test('提示词：同一条消息里的几个文档，小的先放全，剩下的篇幅再给大的', () => {
+  const sheet = longDoc('fbbbbbb4', 'sales.xlsx', 138);
+  const notes = longDoc('fbbbbbb5', 'long-notes.txt', 9000);
+  const deck = longDoc('fbbbbbb6', 'roadmap.pptx', 84);
+  for (const batch of [[sheet, notes, deck], [notes, deck, sheet], [deck, sheet, notes]]) {
+    const r = buildAttachments([user('看看这三个', ...batch)], opts({ maxChars: 5000, readText: longText }));
+    // 一半篇幅 2500，三个说明留出 80 + 84 + 82，文字还有 2254：两个小的放全（222），大的拿到剩下的 2032
+    assert.deepStrictEqual(r.clipped, [{ n: batch.indexOf(notes) + 1, name: 'long-notes.txt', shown: 2032, total: 9000 }], '只有大文档被截断，和选文件的顺序无关');
+    assert.ok(r.text.includes(`说明="文档">\n${longText(sheet)}\n</附件>`));
+    assert.ok(r.text.includes(`说明="文档">\n${longText(deck)}\n</附件>`));
+  }
+  // 不同的消息之间还是新的优先：后发的大文档先拿，之前的小文档可能就放不下了
+  const later = buildAttachments([user('先看这个', sheet), user('再看这个', notes)], opts({ maxChars: 5000, readText: longText }));
+  assert.deepStrictEqual(later.clipped, [
+    { n: 1, name: 'sales.xlsx', shown: 0, total: 138 },
+    { n: 2, name: 'long-notes.txt', shown: 2336, total: 9000 },
+  ]);
+});
+
+test('提示词：附件很多时，较早的不再一个个列出，整段仍然不超过一半篇幅', () => {
+  const messages = [];
+  let k = 0;
+  for (let batch = 0; batch < 5; batch++) {
+    const files = [];
+    for (let i = 0; i < 10; i++, k++) {
+      const id = `feeeee${String(k).padStart(2, '0')}`;
+      files.push(k % 2 ? { ...IMG, id, file: `${id}.png`, name: `现场照片 ${k + 1}.png` } : longDoc(id, `会议记录 ${k + 1}.txt`, 300));
+    }
+    messages.push(user(`第 ${batch + 1} 批`, ...files));
+  }
+  for (const maxChars of [5000, 20000]) {
+    const r = buildAttachments(messages, opts({ maxChars, readText: longText, canRead: true }));
+    const listed = (r.text.match(/<附件 编号=/g) || []).length;
+    assert.strictEqual(listed + r.hidden, 50);
+    // 每个附件的说明按 81 字算，说明最多占四分之一篇幅：5000 字时列得下 15 个，20000 字时全列得下
+    assert.strictEqual(r.hidden, maxChars === 5000 ? 35 : 0);
+    assert.strictEqual(r.text.includes('附件太多'), r.hidden > 0);
+    if (r.hidden) assert.ok(r.text.includes(`（附件太多，另外 35 个较早的这次没有列出。）\n\n<附件 编号="36" `), '列出的是最新的那些，按编号排');
+    assert.ok(r.used <= maxChars / 2 + INTRO.length + 40, `maxChars ${maxChars}：这一段占了 ${r.used}`);
+    assert.ok(r.media.every((m) => m.n > r.hidden), '没列出的附件，文件也不带');
+    assert.strictEqual(r.media.filter((m) => m.kind !== 'text').length, 8);
+    assert.ok(r.media.filter((m) => m.kind === 'text').length <= 8);
+    assert.ok(r.clipped.every((c) => c.n > r.hidden));
+  }
+  // 篇幅再小，最新的一个附件也会列出来
+  const tiny = buildAttachments(messages, opts({ maxChars: 100, readText: longText }));
+  assert.strictEqual(tiny.hidden, 49);
+  assert.ok(tiny.text.includes('<附件 编号="50" 文件名="现场照片 50.png" 说明="图片" />'));
+  inEnglish(() => {
+    assert.ok(buildAttachments(messages, opts({ maxChars: 100 })).text.includes('\n(There are too many attachments to list: 49 earlier ones are left out this time.)\n'));
+    const en = buildAttachments(messages, opts({ maxChars: 5000, readText: longText, canRead: true }));
+    assert.ok(en.used <= 2500 + 250, `英文的说明更长，也不超过一半篇幅（另加开头两句话）：${en.used}`);
+    assert.ok(buildAttachments(messages.slice(4), opts({ maxChars: 5200 })).text.includes('(There are too many attachments to list: 1 earlier one is left out this time.)'));
+  });
+});
+
+test('提示词：截断时不会把一个表情符号切成两半', () => {
+  const { cut, tail } = require('../lib/util');
+  assert.strictEqual(cut('ab😀cd', 3), 'ab');
+  assert.strictEqual(cut('ab😀cd', 4), 'ab😀');
+  assert.strictEqual(cut('ab😀cd', 99), 'ab😀cd');
+  assert.strictEqual(cut('😀', 1), '');
+  assert.strictEqual(cut(null, 5), '');
+  assert.strictEqual(tail('ab😀cd', 3), '…cd');
+  assert.strictEqual(tail('ab😀cd', 4), '…😀cd');
+  const lone = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
+  assert.ok(lone.test('ab😀cd'.slice(0, 3)), '（确认这个检查本身能发现半个字符）');
+
+  // 文档正好在表情符号中间到了篇幅上限
+  const emoji = { ...longDoc('fbbbbbb7', 'emoji-notes.md', 6000), chars: 6000 };
+  for (let pad = 0; pad < 4; pad++) {
+    const text = `${'x'.repeat(pad)}${'进展顺利😀'.repeat(1200)}`.slice(0, 6000);
+    const r = buildAttachments([user('看', emoji)], opts({ maxChars: 3000, readText: () => text }));
+    assert.strictEqual(r.clipped.length, 1);
+    assert.ok(!lone.test(r.text), `pad ${pad}：提示词里出现了半个字符`);
+    // 文字的篇幅是 1416；正好切在表情符号中间时少取一个
+    assert.strictEqual(r.clipped[0].shown, pad === 1 ? 1415 : 1416);
+  }
+  // 聊天记录里太长的消息、太长的文件名也一样
+  const transcript = buildTranscript([user('😀'.repeat(3000))], { speaker: 'claude', mode: 'discuss', maxChars: 1001 });
+  assert.ok(!lone.test(transcript));
+  const store = new AttachmentStore(tmpDir('rt-att-'));
+  const name = store.save({ name: `${'a'.repeat(119)}😀😀.txt`, data: Buffer.from('内容').toString('base64') }).name;
+  assert.strictEqual(name, 'a'.repeat(119));
 });
 
 test('提示词：一次最多带 8 个图片 / PDF 文件，只带最近的', () => {
