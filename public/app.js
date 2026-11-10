@@ -5,9 +5,37 @@
 
   // 桌面版（Electron）和浏览器版共用这一份界面
   const DESKTOP = /Electron\//.test(navigator.userAgent);
-  const RESTART_HINT = DESKTOP ? '请关掉 AI 圆桌再重新打开' : '确认黑色的命令行窗口还开着；关掉了就重新双击 start.bat';
+  // 界面语言由服务端决定（设置里可以改）；T('中文', 'English') 选当前语言的文字
+  let LANG = document.documentElement.lang === 'en' ? 'en' : 'zh';
+  const T = (zh, en) => (LANG === 'en' ? en : zh);
+  const restartHint = () =>
+    DESKTOP
+      ? T('请关掉 AI 圆桌再重新打开', 'Close AI Roundtable and open it again')
+      : T('确认黑色的命令行窗口还开着；关掉了就重新双击 start.bat', 'Make sure the black terminal window is still open; if you closed it, double-click start.bat again');
+  const appName = () => T('AI 圆桌', 'AI Roundtable');
 
   const AVATAR_TEXT = { claude: 'C', gemini: 'G', gpt: 'GPT', user: '我' };
+  const avatarText = (id) => (id === 'user' ? T('我', 'Me') : AVATAR_TEXT[id]);
+
+  // index.html 里的固定文字：中文写在页面里，英文写在 data-en* 属性里
+  function applyStaticLang() {
+    document.documentElement.lang = LANG === 'en' ? 'en' : 'zh-CN';
+    const swap = (node, attr, get, set) => {
+      const keep = `zh${attr}`;
+      if (node.dataset[keep] == null) node.dataset[keep] = get();
+      set(LANG === 'en' ? node.dataset[`en${attr}`] : node.dataset[keep]);
+    };
+    for (const n of document.querySelectorAll('[data-en]')) swap(n, '', () => n.textContent, (v) => (n.textContent = v));
+    for (const n of document.querySelectorAll('[data-en-html]')) swap(n, 'Html', () => n.innerHTML, (v) => (n.innerHTML = v));
+    for (const n of document.querySelectorAll('[data-en-placeholder]')) swap(n, 'Placeholder', () => n.placeholder, (v) => (n.placeholder = v));
+    for (const n of document.querySelectorAll('[data-en-title]')) {
+      swap(n, 'Title', () => n.getAttribute('title') || n.getAttribute('aria-label'), (v) => {
+        if (n.hasAttribute('title')) n.title = v;
+        if (n.hasAttribute('aria-label')) n.setAttribute('aria-label', v);
+      });
+    }
+    $('#conn-banner').textContent = T(`与本地服务断开了，正在重连……（${restartHint()}）`, `Lost the connection to the local service; reconnecting... (${restartHint()})`);
+  }
   const NAMES = { claude: 'Claude', gemini: 'Gemini', gpt: 'GPT' };
   const SECRET_KEYS = ['token', 'apiKey'];
 
@@ -68,13 +96,13 @@
     try {
       res = await fetch(path, opts);
     } catch {
-      const e = new Error('连不上本地服务');
+      const e = new Error(T('连不上本地服务', 'Could not reach the local service'));
       e.hint = RESTART_HINT;
       throw e;
     }
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      const e = new Error(data.error || `请求失败（${res.status}）`);
+      const e = new Error(data.error || T(`请求失败（${res.status}）`, `Request failed (${res.status})`));
       e.hint = data.hint;
       throw e;
     }
@@ -101,7 +129,8 @@
     if (d.toDateString() === now.toDateString()) return hm;
     const y = new Date(now);
     y.setDate(now.getDate() - 1);
-    if (d.toDateString() === y.toDateString()) return `昨天 ${hm}`;
+    if (d.toDateString() === y.toDateString()) return T(`昨天 ${hm}`, `Yesterday ${hm}`);
+    if (LANG === 'en') return `${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', ...(d.getFullYear() === now.getFullYear() ? {} : { year: 'numeric' }) })} ${hm}`;
     return `${d.getFullYear() === now.getFullYear() ? '' : `${d.getFullYear()}年`}${d.getMonth() + 1}月${d.getDate()}日 ${hm}`;
   }
 
@@ -243,7 +272,7 @@
   };
 
   function avatar(id) {
-    return el('div', { class: `avatar ${id}`, 'aria-hidden': 'true' }, AVATAR_TEXT[id] || '?');
+    return el('div', { class: `avatar ${id}`, 'aria-hidden': 'true' }, avatarText(id) || '?');
   }
 
   async function copyText(text, btn) {
@@ -257,8 +286,8 @@
       document.execCommand('copy');
       ta.remove();
     }
-    btn.textContent = '已复制';
-    setTimeout(() => (btn.textContent = '复制'), 1200);
+    btn.textContent = T('已复制', 'Copied');
+    setTimeout(() => (btn.textContent = T('复制', 'Copy')), 1200);
   }
 
   function messageNode(m) {
@@ -267,8 +296,8 @@
       return el('div', { class: 'msg user', 'data-id': m.id }, el('div', { class: 'body' }, el('div', { class: 'bubble', html: userHtml(m.text) })), avatar('user'));
     }
     const meta = m.meta || {};
-    const metaText = [meta.model, meta.effort, meta.ms ? `${(meta.ms / 1000).toFixed(1)} 秒` : '', meta.note].filter(Boolean).join(' · ');
-    const copyBtn = el('button', { class: 'copy', type: 'button', title: '复制这条回复' }, '复制');
+    const metaText = [meta.model, meta.effort, meta.ms ? T(`${(meta.ms / 1000).toFixed(1)} 秒`, `${(meta.ms / 1000).toFixed(1)}s`) : '', meta.note].filter(Boolean).join(' · ');
+    const copyBtn = el('button', { class: 'copy', type: 'button', title: T('复制这条回复', 'Copy this reply') }, T('复制', 'Copy'));
     copyBtn.addEventListener('click', () => copyText(m.text, copyBtn));
     return el(
       'div',
@@ -326,7 +355,8 @@
       el('div', { class: 'body' }, el('div', { class: 'name' }, NAMES[speaker] || speaker), el('div', { class: 'bubble' }, el('span', { class: 'dots' }, el('i'), el('i'), el('i')), elapsed))
     );
     const tick = () => {
-      elapsed.textContent = `正在输入… ${Math.max(0, Math.round((Date.now() - startedAt) / 1000))} 秒`;
+      const sec = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
+      elapsed.textContent = T(`正在输入… ${sec} 秒`, `typing... ${sec}s`);
     };
     tick();
     typingTimer = setInterval(tick, 1000);
@@ -338,7 +368,7 @@
     box.replaceChildren(
       ...state.members.map((m) => {
         const speaking = state.typing && state.typing.speaker === m.id;
-        const title = !m.enabled ? `${m.name}：已关闭` : m.ready ? `${m.name}：${m.providerLabel}${m.model ? ` · ${m.model}` : ''}` : `${m.name}：${m.reason}`;
+        const title = !m.enabled ? T(`${m.name}：已关闭`, `${m.name}: off`) : `${m.name}${T('：', ': ')}${m.ready ? `${m.providerLabel}${m.model ? ` · ${m.model}` : ''}` : m.reason}`;
         const cls = ['member', m.id, m.enabled ? '' : 'off', speaking ? 'speaking' : '', m.enabled && !m.ready ? 'warn' : ''].filter(Boolean).join(' ');
         return el('span', { class: cls, title }, el('span', { class: 'dot' }), m.name);
       })
@@ -346,7 +376,7 @@
     $('#mention-chips').replaceChildren(
       ...state.members
         .filter((m) => m.enabled)
-        .map((m) => el('button', { class: `chip ${m.id}`, type: 'button', title: `只让 ${m.name} 回答`, onclick: () => insertMention(m.name) }, `@${m.name}`))
+        .map((m) => el('button', { class: `chip ${m.id}`, type: 'button', title: T(`只让 ${m.name} 回答`, `Ask only ${m.name}`), onclick: () => insertMention(m.name) }, `@${m.name}`))
     );
     updateWelcome();
   }
@@ -358,7 +388,9 @@
     $('#btn-continue').classList.toggle('hidden', state.busy);
     $('#btn-continue').disabled = !state.messages.some((m) => m.speaker === 'user');
     let hint = '';
-    if (state.busy) hint = state.queued ? `后面还有 ${state.queued} 次发言在排队；这时发新消息会改变后面的安排` : '最后一位正在发言';
+    if (state.busy) hint = state.queued
+        ? T(`后面还有 ${state.queued} 次发言在排队；这时发新消息会改变后面的安排`, `${state.queued} more ${state.queued === 1 ? 'reply is' : 'replies are'} queued; a new message now will change the plan`)
+        : T('最后一位正在发言', 'The last member is replying');
     $('#queue-hint').textContent = hint;
   }
 
@@ -433,6 +465,7 @@
 
   let settings = null;
   let draft = null;
+  let settingsLang = '';
   const secretEdits = {};
 
   function field(label, control, help, extra, cls) {
@@ -440,10 +473,10 @@
   }
 
   function toggle(checked, onChange, label) {
-    const input = el('input', { type: 'checkbox', 'aria-label': label || '启用' });
+    const input = el('input', { type: 'checkbox', 'aria-label': label || T('启用', 'Enable') });
     input.checked = checked;
     input.addEventListener('change', () => onChange(input.checked));
-    return el('label', { class: 'switch', title: label || '启用' }, input, el('span'));
+    return el('label', { class: 'switch', title: label || T('启用', 'Enable') }, input, el('span'));
   }
 
   async function openSettings() {
@@ -461,15 +494,25 @@
   }
 
   function renderSettings() {
+    settingsLang = LANG;
     const body = $('#settings-body');
     body.classList.toggle('show-advanced', Boolean(prefs.get('advanced', false)));
 
     const timeout = el('input', { class: 'input', type: 'number', min: '30', max: '1800', step: '10' });
     timeout.value = draft.timeoutSec;
     timeout.addEventListener('input', () => (draft.timeoutSec = Number(timeout.value)));
-    const proxy = el('input', { class: 'input', type: 'text', spellcheck: 'false', placeholder: '例如 http://127.0.0.1:7890（不需要就留空）' });
+    const proxy = el('input', { class: 'input', type: 'text', spellcheck: 'false', placeholder: T('例如 http://127.0.0.1:7890（不需要就留空）', 'e.g. http://127.0.0.1:7890 (leave empty if not needed)') });
     proxy.value = draft.proxy || '';
     proxy.addEventListener('input', () => (draft.proxy = proxy.value));
+    const langSel = el(
+      'select',
+      { class: 'input' },
+      el('option', { value: '' }, '跟随系统 / Follow system'),
+      el('option', { value: 'zh' }, '中文'),
+      el('option', { value: 'en' }, 'English')
+    );
+    langSel.value = draft.lang || '';
+    langSel.addEventListener('change', () => (draft.lang = langSel.value));
     const rotate = el('input', { type: 'checkbox' });
     rotate.checked = Boolean(draft.rotateFirst);
     rotate.addEventListener('change', () => (draft.rotateFirst = rotate.checked));
@@ -484,11 +527,12 @@
       el(
         'section',
         { class: 'card' },
-        el('h3', null, '通用'),
-        field('单次发言最长等多久（秒）', timeout, '有的模型想得比较久；超过这个时间还没回复就放弃这次发言。'),
-        field('代理地址（可选）', proxy, '只有访问 GitHub / Google 接口需要代理时才填，也会传给三个命令行工具。'),
-        el('label', { class: 'check' }, rotate, '每次换一位成员先发言'),
-        el('label', { class: 'check' }, adv, '显示高级选项')
+        el('h3', null, T('通用', 'General')),
+        field('语言 / Language', langSel),
+        field(T('单次发言最长等多久（秒）', 'Max wait per reply (seconds)'), timeout, T('有的模型想得比较久；超过这个时间还没回复就放弃这次发言。', 'Some models think for a long time. A reply that takes longer than this is abandoned.')),
+        field(T('代理地址（可选）', 'Proxy (optional)'), proxy, T('只有访问 GitHub / Google 接口需要代理时才填，也会传给三个命令行工具。', 'Only needed if you reach the GitHub / Google APIs through a proxy. It is also passed to the three command-line tools.')),
+        el('label', { class: 'check' }, rotate, T('每次换一位成员先发言', 'Rotate who speaks first')),
+        el('label', { class: 'check' }, adv, T('显示高级选项', 'Show advanced options'))
       ),
       ...draft.order.map((id, idx) => memberCard(id, idx))
     );
@@ -511,19 +555,19 @@
         'div',
         { class: 'card-head' },
         avatar(id),
-        el('div', { class: 'card-title' }, el('strong', null, info.name), el('span', { class: 'muted' }, `${info.maker} · 第 ${idx + 1} 个发言`)),
+        el('div', { class: 'card-title' }, el('strong', null, info.name), el('span', { class: 'muted' }, `${info.maker} · ${T(`第 ${idx + 1} 个发言`, `speaks #${idx + 1}`)}`)),
         el(
           'div',
           { class: 'card-tools' },
-          el('button', { class: 'icon-btn sm', type: 'button', title: '往前挪', disabled: idx === 0, onclick: () => move(idx, -1) }, '↑'),
-          el('button', { class: 'icon-btn sm', type: 'button', title: '往后挪', disabled: idx === draft.order.length - 1, onclick: () => move(idx, 1) }, '↓'),
+          el('button', { class: 'icon-btn sm', type: 'button', title: T('往前挪', 'Move earlier'), disabled: idx === 0, onclick: () => move(idx, -1) }, '↑'),
+          el('button', { class: 'icon-btn sm', type: 'button', title: T('往后挪', 'Move later'), disabled: idx === draft.order.length - 1, onclick: () => move(idx, 1) }, '↓'),
           toggle(
             m.enabled,
             (v) => {
               m.enabled = v;
               card.classList.toggle('disabled', !v);
             },
-            `启用 ${info.name}`
+            T(`启用 ${info.name}`, `Enable ${info.name}`)
           )
         )
       )
@@ -538,30 +582,32 @@
       m.provider = sel.value;
       renderFields();
     });
-    card.append(field('接入方式', sel));
+    card.append(field(T('接入方式', 'Connect via'), sel));
     card.append(fieldsBox);
     renderFields();
 
-    const instr = el('textarea', { class: 'input', rows: '2', placeholder: '例如：你是一位挑剔的投资人，说话犀利、爱追问' });
+    const instr = el('textarea', { class: 'input', rows: '2', placeholder: T('例如：你是一位挑剔的投资人，说话犀利、爱追问', 'e.g. You are a picky investor: blunt, and you keep asking follow-up questions') });
     instr.value = m.instruction || '';
     instr.addEventListener('input', () => (m.instruction = instr.value));
-    card.append(field('额外人设（可选）', instr, '会附加在它的群聊规则后面。'));
+    card.append(field(T('额外人设（可选）', 'Extra persona (optional)'), instr, T('会附加在它的群聊规则后面。', 'Added after its group-chat rules.')));
 
     const result = el('div', { class: 'test-result' });
-    const btn = el('button', { class: 'btn ghost sm', type: 'button' }, '保存并测试');
+    const btn = el('button', { class: 'btn ghost sm', type: 'button' }, T('保存并测试', 'Save and test'));
     btn.addEventListener('click', async () => {
       btn.disabled = true;
       result.className = 'test-result pending';
-      result.textContent = '测试中……命令行工具第一次启动可能要十几秒';
+      result.textContent = T('测试中……命令行工具第一次启动可能要十几秒', 'Testing... a command-line tool can take ten seconds or more on first start');
       try {
         await saveSettings({ silent: true });
         const r = await api(`/api/test/${id}`, {});
         if (r.ok) {
           result.className = 'test-result ok';
-          result.textContent = `✓ 连上了（${(r.ms / 1000).toFixed(1)} 秒）回复：“${r.reply}”${[r.model, r.effort, r.note].filter(Boolean).map((x) => ` · ${x}`).join('')}`;
+          const extra = [r.model, r.effort, r.note].filter(Boolean).map((x) => ` · ${x}`).join('');
+          const secs = (r.ms / 1000).toFixed(1);
+          result.textContent = T(`✓ 连上了（${secs} 秒）回复：“${r.reply}”${extra}`, `✓ Connected (${secs}s). Reply: "${r.reply}"${extra}`);
         } else {
           result.className = 'test-result bad';
-          result.replaceChildren(...[el('div', null, `✗ ${r.error}`), r.hint ? el('div', null, `建议：${r.hint}`) : null].filter(Boolean));
+          result.replaceChildren(...[el('div', null, `✗ ${r.error}`), r.hint ? el('div', null, T(`建议：${r.hint}`, `Tip: ${r.hint}`)) : null].filter(Boolean));
         }
       } catch (e) {
         result.className = 'test-result bad';
@@ -589,7 +635,7 @@
           type: 'password',
           autocomplete: 'off',
           spellcheck: 'false',
-          placeholder: saved ? `已保存（${values[f.key]}），留空表示不修改` : '粘贴到这里',
+          placeholder: saved ? T(`已保存（${values[f.key]}），留空表示不修改`, `Saved (${values[f.key]}); leave empty to keep it`) : T('粘贴到这里', 'Paste here'),
         });
         input.value = secretEdits[key] || '';
         input.addEventListener('input', () => (secretEdits[key] = input.value.trim()));
@@ -607,9 +653,9 @@
         const sel = el(
           'select',
           { class: 'input' },
-          el('option', { value: '' }, '默认'),
+          el('option', { value: '' }, T('默认', 'Default')),
           ...f.choices.map(([v, label]) => el('option', { value: v }, label)),
-          el('option', { value: CUSTOM }, '自定义…')
+          el('option', { value: CUSTOM }, T('自定义…', 'Custom...'))
         );
         input = el('input', { class: 'input', type: 'text', spellcheck: 'false', placeholder: f.placeholder || '' });
         input.value = known ? '' : cur;
@@ -639,7 +685,7 @@
           ? el('div', { class: 'with-btn' }, input, el('datalist', { id: listId }, ...(f.suggestions || []).map((s) => el('option', { value: s }))))
           : input;
         if (f.loadModels) {
-          const btn = el('button', { class: 'btn ghost sm', type: 'button' }, '加载可用模型');
+          const btn = el('button', { class: 'btn ghost sm', type: 'button' }, T('加载可用模型', 'Load available models'));
           btn.addEventListener('click', () => loadGithubModels(btn, input, listId));
           control.append(btn);
         }
@@ -650,7 +696,7 @@
         extra = el(
           'div',
           { class: `detect ${d.found ? 'ok' : 'bad'}` },
-          d.found ? `已找到：${d.path}` : '还没找到这个命令（装好后关掉圆桌窗口重新打开，或者在这里填完整路径）'
+          d.found ? T(`已找到：${d.path}`, `Found: ${d.path}`) : T('还没找到这个命令（装好后关掉圆桌窗口重新打开，或者在这里填完整路径）', 'Command not found yet (after installing, restart AI Roundtable, or enter the full path here)')
         );
       }
       nodes.push(field(f.label, control, f.help, extra, f.advanced ? 'advanced' : ''));
@@ -676,20 +722,25 @@
   async function saveSettings({ silent } = {}) {
     const res = await api('/api/config', buildPatch());
     settings = res;
-    if (!silent) toast('设置已保存', 'ok');
+    setLang(res.lang);
+    if (settingsLang !== LANG && !$('#settings-modal').classList.contains('hidden')) {
+      draft = JSON.parse(JSON.stringify(res.config));
+      renderSettings();
+    }
+    if (!silent) toast(T('设置已保存', 'Settings saved'), 'ok');
     return res;
   }
 
   async function loadGithubModels(btn, input, listId) {
     const old = btn.textContent;
     btn.disabled = true;
-    btn.textContent = '加载中…';
+    btn.textContent = T('加载中…', 'Loading...');
     try {
       await saveSettings({ silent: true });
       const { items } = await api('/api/github-models', {});
       const dl = document.getElementById(listId);
       dl.replaceChildren(...items.map((m) => el('option', { value: m.id }, `${m.name}${m.tier ? `（${m.tier}）` : ''}`)));
-      toast(`找到 ${items.length} 个模型：点一下模型输入框就能选`, 'ok');
+      toast(T(`找到 ${items.length} 个模型：点一下模型输入框就能选`, `Found ${items.length} models: click the model box to choose one`), 'ok');
       input.focus();
     } catch (e) {
       showError(e);
@@ -703,17 +754,17 @@
 
   async function openHistory() {
     const body = $('#history-body');
-    body.replaceChildren(el('div', { class: 'empty-history' }, '加载中……'));
+    body.replaceChildren(el('div', { class: 'empty-history' }, T('加载中……', 'Loading...')));
     openModal('#history-modal');
     try {
       const { items } = await api('/api/history');
       if (!items.length) {
-        body.replaceChildren(el('div', { class: 'empty-history' }, '还没有历史对话。', el('br'), '点「新对话」时，当前对话会自动存到这里。'));
+        body.replaceChildren(el('div', { class: 'empty-history' }, T('还没有历史对话。', 'No past chats yet.'), el('br'), T('点「新对话」时，当前对话会自动存到这里。', 'When you start a new chat, the current one is saved here.')));
         return;
       }
       body.replaceChildren(
         ...items.map((it) => {
-          const b = el('button', { class: 'history-item', type: 'button' }, el('span', { class: 'h-title' }, it.title), el('span', { class: 'h-meta' }, `${fmtTime(it.createdAt)} · ${it.count} 条消息`));
+          const b = el('button', { class: 'history-item', type: 'button' }, el('span', { class: 'h-title' }, it.title), el('span', { class: 'h-meta' }, `${fmtTime(it.createdAt)} · ${T(`${it.count} 条消息`, `${it.count} message${it.count === 1 ? '' : 's'}`)}`));
           b.addEventListener('click', async () => {
             try {
               await api('/api/history/open', { file: it.file });
@@ -739,7 +790,18 @@
     else bannerTimer = setTimeout(() => $('#conn-banner').classList.remove('hidden'), 1500);
   }
 
+  // 换语言：固定文字和下拉选项要重画（打开着的设置窗口在保存后重画）
+  function setLang(v) {
+    const lang = v === 'en' ? 'en' : 'zh';
+    if (lang === LANG) return;
+    LANG = lang;
+    prefs.set('lang', lang);
+    applyStaticLang();
+    optionsFilled = false;
+  }
+
   function applySnapshot(s) {
+    setLang(s.lang);
     state.messages = s.messages || [];
     state.members = s.members || [];
     state.modes = s.modes || state.modes;
@@ -755,7 +817,7 @@
     renderMembers();
     renderTyping();
     updateButtons();
-    document.title = state.messages.length ? `AI 圆桌 · ${s.conversation.title}` : 'AI 圆桌';
+    document.title = state.messages.length ? `${appName()} · ${s.conversation.title}` : appName();
   }
 
   function connect() {
@@ -797,7 +859,8 @@
 
   function init() {
     if (DESKTOP) document.documentElement.classList.add('desktop');
-    $('#conn-banner').textContent = `与本地服务断开了，正在重连……（${RESTART_HINT}）`;
+    LANG = prefs.get('lang', LANG) === 'en' ? 'en' : 'zh';
+    applyStaticLang();
     const ta = $('#input');
     ta.addEventListener('input', () => {
       autosize();
@@ -813,11 +876,11 @@
     $('#btn-stop').addEventListener('click', () => api('/api/stop', {}).catch(showError));
     $('#btn-continue').addEventListener('click', () => api('/api/continue', currentOpts()).catch(showError));
     $('#btn-new').addEventListener('click', () => {
-      if (state.messages.length && !confirm('开始新对话？当前对话会保存到「历史对话」里。')) return;
+      if (state.messages.length && !confirm(T('开始新对话？当前对话会保存到「历史对话」里。', 'Start a new chat? The current one will be saved to chat history.'))) return;
       api('/api/new', {}).catch(showError);
     });
     $('#btn-export').addEventListener('click', () => {
-      if (!state.messages.length) return toast('现在还没有内容可以导出');
+      if (!state.messages.length) return toast(T('现在还没有内容可以导出', 'Nothing to export yet'));
       window.location.href = '/api/export';
     });
     $('#btn-history').addEventListener('click', openHistory);
@@ -842,7 +905,7 @@
       b.addEventListener('click', () => {
         $('#opt-mode').value = b.dataset.mode;
         prefs.set('mode', b.dataset.mode);
-        ta.value = b.dataset.text;
+        ta.value = LANG === 'en' ? b.dataset.enText : b.dataset.text;
         autosize();
         updateButtons();
         ta.focus();

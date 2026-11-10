@@ -5,13 +5,14 @@
 
 const [major] = process.versions.node.split('.').map(Number);
 if (major < 18) {
-  console.error(`需要 Node.js 18 或更高版本（你现在是 ${process.version}）。请到 https://nodejs.org 下载安装 LTS 版本。`);
+  console.error(`需要 Node.js 18 或更高版本（你现在是 ${process.version}）。请到 https://nodejs.org 下载安装 LTS 版本。\nNode.js 18 or later is required (you have ${process.version}). Install the LTS version from https://nodejs.org.`);
   process.exit(1);
 }
 
 const path = require('path');
 const { spawn } = require('child_process');
 const { createAppServer, pingExisting } = require('./lib/app-server');
+const { tr } = require('./lib/i18n');
 
 const argv = process.argv.slice(2);
 const NO_OPEN = argv.includes('--no-open');
@@ -46,25 +47,25 @@ async function main() {
       if (e.code !== 'EADDRINUSE') throw e;
       if (await pingExisting(port)) {
         const url = `http://127.0.0.1:${port}`;
-        console.log(`AI 圆桌已经在运行了：${url}（已帮你打开浏览器）`);
+        console.log(tr(`AI 圆桌已经在运行了：${url}（已帮你打开浏览器）`, `AI Roundtable is already running: ${url} (opened it in your browser)`));
         openBrowser(url);
         setTimeout(() => process.exit(0), 500);
         return;
       }
       if (i === attempts - 1) {
-        console.error(`端口 ${port} 被占用了。可以在 config.json 里把 port 改成别的数字再试。`);
+        console.error(tr(`端口 ${port} 被占用了。可以在 config.json 里把 port 改成别的数字再试。`, `Port ${port} is in use. Change port in config.json to another number and try again.`));
         process.exit(1);
       }
     }
   }
 
   console.log('');
-  console.log('  AI 圆桌 已启动');
-  console.log(`  在浏览器打开：${app.url}`);
-  console.log('  关闭这个窗口就会退出');
+  console.log(tr('  AI 圆桌 已启动', '  AI Roundtable started'));
+  console.log(tr(`  在浏览器打开：${app.url}`, `  Open in your browser: ${app.url}`));
+  console.log(tr('  关闭这个窗口就会退出', '  Close this window to quit'));
   console.log('');
   for (const m of app.memberSummary()) {
-    const status = !m.enabled ? '已关闭' : m.ready ? '就绪' : `需要设置（${m.reason}）`;
+    const status = !m.enabled ? tr('已关闭', 'off') : m.ready ? tr('就绪', 'ready') : tr(`需要设置（${m.reason}）`, `needs setup (${m.reason})`);
     console.log(`  - ${m.name.padEnd(7)} ${m.providerLabel}：${status}`);
   }
   console.log('');
@@ -79,6 +80,6 @@ process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 
 main().catch((e) => {
-  console.error('启动失败：', e.message);
+  console.error(tr('启动失败：', 'Failed to start:'), e.message);
   process.exit(1);
 });

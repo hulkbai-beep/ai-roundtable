@@ -21,6 +21,7 @@ process.stdin.on('end', () => {
     print: args.includes('-p'),
     json: args[args.indexOf('--output-format') + 1] === 'json',
     systemArg: sys >= 0 && args[sys + 1].includes('你是 Claude'),
+    systemEn: sys >= 0 && args[sys + 1].includes('You are Claude.') ? true : undefined,
     systemLines: sys >= 0 ? args[sys + 1].split('\n').length : 0,
     toolsDisabled: tools >= 0 && args[tools + 1] === '',
     stdinHasSystem: input.includes('你是 Claude'),

@@ -22,6 +22,7 @@ before(async () => {
   await app.listen(0);
   c = client(app.port);
   const r = await c.post('/api/config', {
+    lang: 'zh',
     members: { gpt: { 'github-models': { token: 'good-token', baseUrl: `http://127.0.0.1:${api.port}/inference` } } },
   });
   assert.strictEqual(r.status, 200);
@@ -228,6 +229,32 @@ test('接口的思考强度：推理模型带上 reasoning_effort / thinkingLeve
       },
     });
   }
+});
+
+test('英文版：界面文字、AI 的人设和错误提示都换成英文，再换回中文', async () => {
+  let cfg = (await c.post('/api/config', { lang: 'en' })).json;
+  try {
+    assert.strictEqual(cfg.lang, 'en');
+    assert.strictEqual(cfg.providers['claude-cli'].label, 'Claude Code (Max subscription)');
+    const effort = cfg.providers['claude-cli'].fields.find((f) => f.key === 'effort');
+    assert.deepStrictEqual(effort.options[0], ['', 'Default']);
+    assert.ok(!/[\u4e00-\u9fff]/.test(JSON.stringify(cfg.providers)), '接入方式的说明里不应该还有中文');
+
+    await c.post('/api/new');
+    const s = await sendAndWait(c, { text: '@Claude hello' });
+    assert.strictEqual(s.lang, 'en');
+    assert.strictEqual(s.modes.debate, 'Debate');
+    const info = parseInfo(aiMessages(s)[0].text, 'MOCK-CLAUDE');
+    assert.strictEqual(info.systemArg, false, '英文人设里不应该有“你是 Claude”');
+    assert.strictEqual(info.systemEn, true);
+
+    const bad = await c.post('/api/send', { text: '' });
+    assert.strictEqual(bad.json.error, 'The message is empty');
+    assert.ok((await c.post('/api/test/claude')).json.ok);
+  } finally {
+    cfg = (await c.post('/api/config', { lang: 'zh' })).json;
+  }
+  assert.strictEqual(cfg.providers['claude-cli'].label, 'Claude Code（Max 订阅）');
 });
 
 test('旧版本命令行工具：不认识的参数会自动去掉再试', async () => {

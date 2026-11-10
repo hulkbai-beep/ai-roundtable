@@ -17,21 +17,21 @@
           <circle cx="16" cy="21" r="8" fill="var(--gpt)" fill-opacity=".9" />
         </svg>
         <div class="brand-text">
-          <h1>AI 圆桌</h1>
-          <div class="members" id="members" aria-label="群成员"></div>
+          <h1 data-en="AI Roundtable">AI 圆桌</h1>
+          <div class="members" id="members" aria-label="群成员" data-en-title="Members"></div>
         </div>
       </div>
       <nav class="actions">
-        <button class="icon-btn" id="btn-history" type="button" title="历史对话" aria-label="历史对话">
+        <button class="icon-btn" id="btn-history" type="button" title="历史对话" aria-label="历史对话" data-en-title="Chat history">
           <svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7" /><path d="M3 4v4h4" /><path d="M12 7v5l3 2" /></svg>
         </button>
-        <button class="icon-btn" id="btn-export" type="button" title="导出为 Markdown" aria-label="导出为 Markdown">
+        <button class="icon-btn" id="btn-export" type="button" title="导出为 Markdown" aria-label="导出为 Markdown" data-en-title="Export as Markdown">
           <svg viewBox="0 0 24 24"><path d="M12 4v11" /><path d="m7 10 5 5 5-5" /><path d="M5 20h14" /></svg>
         </button>
-        <button class="icon-btn" id="btn-new" type="button" title="新对话" aria-label="新对话">
+        <button class="icon-btn" id="btn-new" type="button" title="新对话" aria-label="新对话" data-en-title="New chat">
           <svg viewBox="0 0 24 24"><path d="M12 5v14" /><path d="M5 12h14" /></svg>
         </button>
-        <button class="icon-btn" id="btn-settings" type="button" title="设置" aria-label="设置">
+        <button class="icon-btn" id="btn-settings" type="button" title="设置" aria-label="设置" data-en-title="Settings">
           <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" /></svg>
         </button>
       </nav>
@@ -45,14 +45,14 @@
           <div class="hero-avatars" aria-hidden="true">
             <span class="avatar claude">C</span><span class="avatar gemini">G</span><span class="avatar gpt">GPT</span>
           </div>
-          <h2>把 Claude、Gemini、GPT 拉进同一个群</h2>
-          <p>你出题，它们轮流发言、互相接话。想让某一位单独回答，就用 <b>@名字</b> 点名。</p>
-          <div class="setup-tip hidden" id="setup-tip">第一次用？先点右上角的 <b>设置</b>，看看每位成员的命令是不是都找到了，选好模型和思考强度，再给每位成员点一下「保存并测试」。</div>
+          <h2 data-en="Claude, Gemini and GPT in one group chat">把 Claude、Gemini、GPT 拉进同一个群</h2>
+          <p data-en-html="You set the topic; they take turns and build on each other. To ask just one of them, mention them with &lt;b&gt;@name&lt;/b&gt;.">你出题，它们轮流发言、互相接话。想让某一位单独回答，就用 <b>@名字</b> 点名。</p>
+          <div class="setup-tip hidden" id="setup-tip" data-en-html="First time here? Open &lt;b&gt;Settings&lt;/b&gt; (top right), check that each member's command was found, pick a model and reasoning effort, then click &quot;Save and test&quot; for each member.">第一次用？先点右上角的 <b>设置</b>，看看每位成员的命令是不是都找到了，选好模型和思考强度，再给每位成员点一下「保存并测试」。</div>
           <div class="examples">
-            <button class="example" type="button" data-mode="debate" data-text="AI 会让大部分程序员失业吗？请各自先亮明立场。"><span class="tag">辩论</span>AI 会让大部分程序员失业吗？</button>
-            <button class="example" type="button" data-mode="collab" data-text="帮我规划一个 5 天的东京自由行，预算 8000 元人民币，喜欢美食和逛街。"><span class="tag">合作</span>规划 5 天东京自由行，预算 8000 元</button>
-            <button class="example" type="button" data-mode="independent" data-text="用一句话向小学生解释什么是量子纠缠。"><span class="tag">各自回答</span>用一句话给小学生解释量子纠缠</button>
-            <button class="example" type="button" data-mode="discuss" data-text="如果只能推荐一本书给 20 岁的年轻人，你们各推荐哪本？为什么？"><span class="tag">自由讨论</span>只能推荐一本书给 20 岁的人，选哪本？</button>
+            <button class="example" type="button" data-mode="debate" data-text="AI 会让大部分程序员失业吗？请各自先亮明立场。" data-en-text="Will AI put most programmers out of work? Each of you, state your position first."><span class="tag" data-en="Debate">辩论</span><span data-en="Will AI put most programmers out of work?">AI 会让大部分程序员失业吗？</span></button>
+            <button class="example" type="button" data-mode="collab" data-text="帮我规划一个 5 天的东京自由行，预算 8000 元人民币，喜欢美食和逛街。" data-en-text="Help me plan a 5-day trip to Tokyo on a $1,200 budget. I like food and shopping."><span class="tag" data-en="Collaborate">合作</span><span data-en="Plan a 5-day Tokyo trip on $1,200">规划 5 天东京自由行，预算 8000 元</span></button>
+            <button class="example" type="button" data-mode="independent" data-text="用一句话向小学生解释什么是量子纠缠。" data-en-text="Explain quantum entanglement to a ten-year-old in one sentence."><span class="tag" data-en="Answer separately">各自回答</span><span data-en="Explain quantum entanglement to a kid in one sentence">用一句话给小学生解释量子纠缠</span></button>
+            <button class="example" type="button" data-mode="discuss" data-text="如果只能推荐一本书给 20 岁的年轻人，你们各推荐哪本？为什么？" data-en-text="If you could recommend only one book to a 20-year-old, which would each of you pick, and why?"><span class="tag" data-en="Open discussion">自由讨论</span><span data-en="One book for a 20-year-old: which one?">只能推荐一本书给 20 岁的人，选哪本？</span></button>
           </div>
         </section>
         <div id="messages" aria-live="polite"></div>
@@ -62,21 +62,21 @@
 
     <footer class="composer">
       <div class="toolbar">
-        <label class="pill" title="大家用什么方式交流">模式<select id="opt-mode"></select></label>
-        <label class="pill" title="每位成员发言几次">轮数<select id="opt-rounds">
-          <option value="1">1 轮</option><option value="2">2 轮</option><option value="3">3 轮</option><option value="4">4 轮</option><option value="5">5 轮</option>
+        <label class="pill" title="大家用什么方式交流" data-en-title="How the members talk to each other"><span data-en="Mode">模式</span><select id="opt-mode"></select></label>
+        <label class="pill" title="每位成员发言几次" data-en-title="How many times each member speaks"><span data-en="Rounds">轮数</span><select id="opt-rounds">
+          <option value="1" data-en="1 round">1 轮</option><option value="2" data-en="2 rounds">2 轮</option><option value="3" data-en="3 rounds">3 轮</option><option value="4" data-en="4 rounds">4 轮</option><option value="5" data-en="5 rounds">5 轮</option>
         </select></label>
-        <label class="pill" title="每条回复的长度">篇幅<select id="opt-length"></select></label>
+        <label class="pill" title="每条回复的长度" data-en-title="How long each reply is"><span data-en="Length">篇幅</span><select id="opt-length"></select></label>
         <span class="divider" aria-hidden="true"></span>
         <div class="mention-chips" id="mention-chips"></div>
       </div>
       <div class="input-box">
-        <textarea id="input" rows="2" placeholder="说点什么……  Enter 发送，Shift+Enter 换行；用 @Claude / @Gemini / @GPT 点名"></textarea>
+        <textarea id="input" rows="2" placeholder="说点什么……  Enter 发送，Shift+Enter 换行；用 @Claude / @Gemini / @GPT 点名" data-en-placeholder="Say something...  Enter to send, Shift+Enter for a new line; mention @Claude / @Gemini / @GPT to ask one of them"></textarea>
         <div class="input-actions">
           <span class="queue-hint" id="queue-hint"></span>
-          <button class="btn ghost" id="btn-continue" type="button" title="不发新消息，让大家接着再聊一轮">继续聊</button>
-          <button class="btn danger hidden" id="btn-stop" type="button" title="停止当前发言和后面的排队">停止</button>
-          <button class="btn primary" id="btn-send" type="button" disabled>发送</button>
+          <button class="btn ghost" id="btn-continue" type="button" title="不发新消息，让大家接着再聊一轮" data-en-title="Let everyone go another round without a new message" data-en="Keep going">继续聊</button>
+          <button class="btn danger hidden" id="btn-stop" type="button" title="停止当前发言和后面的排队" data-en-title="Stop the current reply and everything queued" data-en="Stop">停止</button>
+          <button class="btn primary" id="btn-send" type="button" disabled data-en="Send">发送</button>
         </div>
       </div>
     </footer>
@@ -85,16 +85,16 @@
   <div class="modal hidden" id="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
     <div class="dialog wide">
       <header class="dialog-head">
-        <h2 id="settings-title">设置</h2>
-        <button class="icon-btn" type="button" data-close aria-label="关闭">
+        <h2 id="settings-title" data-en="Settings">设置</h2>
+        <button class="icon-btn" type="button" data-close aria-label="关闭" data-en-title="Close">
           <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18" /></svg>
         </button>
       </header>
       <div class="dialog-body" id="settings-body"></div>
       <footer class="dialog-foot">
         <span class="muted" id="settings-status"></span>
-        <button class="btn ghost" type="button" data-close>取消</button>
-        <button class="btn primary" type="button" id="btn-save-settings">保存</button>
+        <button class="btn ghost" type="button" data-close data-en="Cancel">取消</button>
+        <button class="btn primary" type="button" id="btn-save-settings" data-en="Save">保存</button>
       </footer>
     </div>
   </div>
@@ -102,8 +102,8 @@
   <div class="modal hidden" id="history-modal" role="dialog" aria-modal="true" aria-labelledby="history-title">
     <div class="dialog">
       <header class="dialog-head">
-        <h2 id="history-title">历史对话</h2>
-        <button class="icon-btn" type="button" data-close aria-label="关闭">
+        <h2 id="history-title" data-en="Chat history">历史对话</h2>
+        <button class="icon-btn" type="button" data-close aria-label="关闭" data-en-title="Close">
           <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18" /></svg>
         </button>
       </header>

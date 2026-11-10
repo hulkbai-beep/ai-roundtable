@@ -1,5 +1,7 @@
 # AI 圆桌
 
+**English:** A local group chat where Claude, Gemini and GPT take turns and reply to each other, using your own subscriptions through their official command-line tools. The app follows your system language; switch any time in Settings → 语言 / Language. This guide is in Chinese for now.
+
 把 Claude、Gemini、GPT 拉进同一个群聊：你出题，它们轮流发言、互相接话。程序完全在你自己的电脑上运行。
 
 | 成员 | 默认接入方式 | 用的是 |
@@ -90,6 +92,7 @@ npm i -g @openai/codex
 - 它们说话的时候你也可以插话：新消息会被后面发言的成员看到，并替换掉还没轮到的发言安排。
 - 右上角按钮：历史对话、导出 Markdown、新对话、设置。
 - 每位成员可以在设置里选 **模型** 和 **思考强度**（低 / 中 / 高……）。思考强度越高，回复越慢、越耗额度。每条回复旁边会标出用的模型和思考强度。
+- 界面有中文和英文两种语言：默认跟随系统，也可以在设置的「语言 / Language」里切换。切到英文后，AI 默认也用英文回复。
 - 设置里还可以：调整发言顺序、暂时关掉某位成员、给某位加「额外人设」（比如“你是一位挑剔的投资人”）。
 
 ---

@@ -7,6 +7,7 @@ const { app, BrowserWindow, Menu, shell, dialog, session, nativeTheme, screen } 
 const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
+const { tr, onLangChange } = require('../lib/i18n');
 
 const ROOT = path.join(__dirname, '..');
 const HOMEPAGE = 'https://github.com/hulkbai-beep/ai-roundtable#readme';
@@ -120,51 +121,51 @@ function saveWindowState(win) {
 function buildMenu(win) {
   const template = [
     {
-      label: '文件',
+      label: tr('文件', 'File'),
       submenu: [
-        { label: '打开数据文件夹', click: () => shell.openPath(userData) },
-        { label: '打开日志', click: () => shell.openPath(logFile) },
+        { label: tr('打开数据文件夹', 'Open data folder'), click: () => shell.openPath(userData) },
+        { label: tr('打开日志', 'Open log'), click: () => shell.openPath(logFile) },
         { type: 'separator' },
-        { role: 'quit', label: '退出' },
+        { role: 'quit', label: tr('退出', 'Quit') },
       ],
     },
     {
-      label: '编辑',
+      label: tr('编辑', 'Edit'),
       submenu: [
-        { role: 'undo', label: '撤销' },
-        { role: 'redo', label: '重做' },
+        { role: 'undo', label: tr('撤销', 'Undo') },
+        { role: 'redo', label: tr('重做', 'Redo') },
         { type: 'separator' },
-        { role: 'cut', label: '剪切' },
-        { role: 'copy', label: '复制' },
-        { role: 'paste', label: '粘贴' },
-        { role: 'selectAll', label: '全选' },
+        { role: 'cut', label: tr('剪切', 'Cut') },
+        { role: 'copy', label: tr('复制', 'Copy') },
+        { role: 'paste', label: tr('粘贴', 'Paste') },
+        { role: 'selectAll', label: tr('全选', 'Select all') },
       ],
     },
     {
-      label: '查看',
+      label: tr('查看', 'View'),
       submenu: [
-        { role: 'reload', label: '重新加载' },
-        { role: 'toggleDevTools', label: '开发者工具' },
+        { role: 'reload', label: tr('重新加载', 'Reload') },
+        { role: 'toggleDevTools', label: tr('开发者工具', 'Developer tools') },
         { type: 'separator' },
-        { role: 'resetZoom', label: '实际大小' },
-        { role: 'zoomIn', label: '放大' },
-        { role: 'zoomOut', label: '缩小' },
+        { role: 'resetZoom', label: tr('实际大小', 'Actual size') },
+        { role: 'zoomIn', label: tr('放大', 'Zoom in') },
+        { role: 'zoomOut', label: tr('缩小', 'Zoom out') },
         { type: 'separator' },
-        { role: 'togglefullscreen', label: '全屏' },
+        { role: 'togglefullscreen', label: tr('全屏', 'Full screen') },
       ],
     },
     {
-      label: '帮助',
+      label: tr('帮助', 'Help'),
       submenu: [
-        { label: '使用说明', click: () => shell.openExternal(HOMEPAGE) },
+        { label: tr('使用说明', 'User guide'), click: () => shell.openExternal(HOMEPAGE) },
         {
-          label: '关于 AI 圆桌',
+          label: tr('关于 AI 圆桌', 'About AI Roundtable'),
           click: () =>
             dialog.showMessageBox(win, {
               type: 'info',
-              title: '关于 AI 圆桌',
-              message: `AI 圆桌 ${app.getVersion()}`,
-              detail: `让 Claude、Gemini、GPT 在同一个群里聊天。\n\n数据保存在：${userData}`,
+              title: tr('关于 AI 圆桌', 'About AI Roundtable'),
+              message: tr(`AI 圆桌 ${app.getVersion()}`, `AI Roundtable ${app.getVersion()}`),
+              detail: tr(`让 Claude、Gemini、GPT 在同一个群里聊天。\n\n数据保存在：${userData}`, `Claude, Gemini and GPT in one group chat.\n\nData folder: ${userData}`),
             }),
         },
       ],
@@ -188,7 +189,7 @@ async function startServer() {
     if (e.code !== 'EADDRINUSE' || PORT_ARG) throw e;
     await appServer.listen(0); // 3939 被占用（比如浏览器版也开着），随便挑一个空闲端口
   }
-  console.log(`AI 圆桌 ${app.getVersion()} 已启动：${appServer.url}，数据目录：${userData}`);
+  console.log(`AI Roundtable ${app.getVersion()} started: ${appServer.url}, data: ${userData}`);
   return appServer.url;
 }
 
@@ -203,7 +204,7 @@ function createWindow(url) {
     minWidth: 420,
     minHeight: 560,
     show: false,
-    title: 'AI 圆桌',
+    title: tr('AI 圆桌', 'AI Roundtable'),
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#111111' : '#ededed',
     autoHideMenuBar: true,
     ...(fs.existsSync(devIcon) ? { icon: devIcon } : {}),
@@ -226,6 +227,9 @@ function createWindow(url) {
   });
 
   buildMenu(win);
+  onLangChange(() => {
+    if (!win.isDestroyed()) buildMenu(win);
+  });
   win.loadURL(url);
   return win;
 }
@@ -276,7 +280,7 @@ if (!gotLock) {
       session.defaultSession.setPermissionRequestHandler((wc, permission, cb) => cb(permission === 'clipboard-sanitized-write'));
       session.defaultSession.on('will-download', (e, item) => {
         item.setSaveDialogOptions({
-          title: '导出对话',
+          title: tr('导出对话', 'Export chat'),
           defaultPath: path.join(app.getPath('documents'), item.getFilename()),
           filters: [{ name: 'Markdown', extensions: ['md'] }],
         });
@@ -286,13 +290,13 @@ if (!gotLock) {
       mainWindow.on('closed', () => (mainWindow = null));
       if (SMOKE_OUT) runSmokeTest(mainWindow);
     } catch (e) {
-      console.error('启动失败', e);
+      console.error(tr('启动失败', 'Failed to start'), e);
       if (SMOKE_OUT) {
         fs.writeFileSync(SMOKE_OUT, JSON.stringify({ ok: false, error: String((e && e.stack) || e) }));
         app.exit(1);
         return;
       }
-      dialog.showErrorBox('AI 圆桌启动失败', `${e.message}\n\n日志：${logFile}`);
+      dialog.showErrorBox(tr('AI 圆桌启动失败', 'AI Roundtable failed to start'), `${e.message}\n\n日志：${logFile}`);
       app.exit(1);
     }
   });

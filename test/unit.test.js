@@ -2,6 +2,7 @@
 
 const { test } = require('node:test');
 const assert = require('assert');
+require('../lib/i18n').setLang('zh'); // 下面的断言按中文写；英文版另有测试
 const { resolveCommand, parseCmdShim, quoteForCmd, findUnknownFlag } = require('../lib/spawn');
 const { parseMentions, cleanReply, buildTranscript, buildSystemPrompt } = require('../lib/prompt');
 const { splitArgs, maskSecret } = require('../lib/util');
