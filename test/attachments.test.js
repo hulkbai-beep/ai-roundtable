@@ -251,7 +251,7 @@ test('XML 转义字符', () => {
 
 test('PDF：最简单的文字指令（Tj、TJ、换行、转义、八进制）', () => {
   const r = pdfText(textPdf(['BT /F1 12 Tf 72 720 Td (Hello, world!) Tj 0 -16 Td [(Sec) -20 (ond) -300 (line)] TJ ET']));
-  assert.deepStrictEqual(r, { text: 'Hello, world!\nSecond line', pages: 1, encrypted: false, truncated: false, coverage: 1 });
+  assert.deepStrictEqual(r, { text: 'Hello, world!\nSecond line', pages: 1, objects: 5, encrypted: false, truncated: false, coverage: 1 });
   const escapes = "BT /F1 12 Tf 14 TL 72 720 Td (Parens \\(a\\) and backslash \\\\ and octal \\101\\102) Tj T* (next) Tj (quote line) ' 1 2 (dq line) \" ET";
   assert.strictEqual(pdfText(textPdf([escapes])).text, 'Parens (a) and backslash \\ and octal AB\nnext\nquote line\ndq line');
 });
@@ -306,7 +306,7 @@ test('PDF：中文等内嵌字体靠 ToUnicode 表把编号换成文字', () => 
     stream: (d) => ({ dict: '/Filter /FlateDecode', stream: deflate(d) }),
     more: [{ dict: '/Filter /FlateDecode', stream: deflate(TO_UNICODE) }, '<< /Type /FontDescriptor /FontName /AAAAAA+Test /Flags 4 >>', CID_FONT(7)],
   });
-  assert.deepStrictEqual(pdfText(pdf), { text: '你好世界😀\nABC', pages: 1, encrypted: false, truncated: false, coverage: 1 });
+  assert.deepStrictEqual(pdfText(pdf), { text: '你好世界😀\nABC', pages: 1, objects: 8, encrypted: false, truncated: false, coverage: 1 });
   assert.deepStrictEqual({ ...inspect(pdf, 'a.pdf'), text: undefined }, { kind: 'pdf', ext: 'pdf', mime: 'application/pdf', text: undefined, pages: 1, partial: true, encrypted: false }, '只有几个字：文件本身也要交给 AI');
 });
 
@@ -336,7 +336,7 @@ test('PDF：对象流（PDF 1.5 起很常见）里的对象也能找到', () => 
     packed,
     Buffer.from('\nendstream\nendobj\n7 0 obj\n<< /Type /XRef /Size 8 /Root 1 0 R /W [1 2 1] /Length 0 >>\nstream\n\nendstream\nendobj\nstartxref\n0\n%%EOF\n', 'latin1'),
   ]);
-  assert.deepStrictEqual(pdfText(pdf), { text: 'Inside an object stream', pages: 1, encrypted: false, truncated: false, coverage: 1 });
+  assert.deepStrictEqual(pdfText(pdf), { text: 'Inside an object stream', pages: 1, objects: 7, encrypted: false, truncated: false, coverage: 1 });
 });
 
 test('PDF：多个内容流、继承来的字体、表单对象、内嵌图片', () => {
@@ -357,6 +357,7 @@ test('PDF：多页时标出页码；太长时截断', () => {
   assert.deepStrictEqual(pdfText(textPdf([page('Page one'), page('Page two'), '', page('Page four')])), {
     text: '--- 1 ---\nPage one\n\n--- 2 ---\nPage two\n\n--- 4 ---\nPage four',
     pages: 4,
+    objects: 11,
     encrypted: false,
     truncated: false,
     coverage: 1,
@@ -373,17 +374,18 @@ test('PDF：多页时标出页码；太长时截断', () => {
 });
 
 test('PDF：加密的、损坏的、根本不是 PDF 的内容都不会崩溃', () => {
-  assert.deepStrictEqual(pdfText(textPdf(['BT /F1 12 Tf 72 720 Td (Secret) Tj ET'], { trailer: '/Encrypt 99 0 R ' })), { text: '', pages: 0, encrypted: true, truncated: false, coverage: 0 });
+  assert.deepStrictEqual(pdfText(textPdf(['BT /F1 12 Tf 72 720 Td (Secret) Tj ET'], { trailer: '/Encrypt 99 0 R ' })), { text: '', pages: 0, objects: 5, encrypted: true, truncated: false, coverage: 0 });
   const whole = textPdf(['BT /F1 12 Tf 72 720 Td (Cut off file) Tj ET']);
   assert.strictEqual(pdfText(whole.subarray(0, whole.length - 200)).text, 'Cut off file', '末尾的索引丢了也能读');
-  assert.deepStrictEqual(pdfText(Buffer.from('%PDF-1.4\n%%EOF')), { text: '', pages: 0, encrypted: false, truncated: false, coverage: 0 });
+  assert.deepStrictEqual(pdfText(Buffer.from('%PDF-1.4\n%%EOF')), { text: '', pages: 0, objects: 0, encrypted: false, truncated: false, coverage: 0 });
   const noise = Buffer.alloc(20000);
   for (let i = 0; i < noise.length; i++) noise[i] = (i * 7919 + (i >> 3) * 31) & 0xff;
   assert.strictEqual(pdfText(Buffer.concat([Buffer.from('%PDF-1.7\n'), noise])).text, '');
   // 结构不完整、互相引用成环、长度写错的对象
   const odd = ['1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj', '2 0 obj\n<< /Type /Pages /Kids [2 0 R 3 0 R 9 0 R] >>\nendobj', '3 0 obj\n<< /Type /Page /Contents 4 0 R /Resources 3 0 R >>\nendobj', '4 0 obj\n<< /Length 99999 >>\nstream\nBT (no font) Tj [ (unclosed', '5 0 obj\n<< /Type /Page /Contents [ 6 0 R', '6 0 obj\n(((('];
   for (let n = 1; n <= odd.length; n++) assert.doesNotThrow(() => pdfText(Buffer.from(`%PDF-1.4\n${odd.slice(0, n).join('\n')}\n`, 'latin1')));
-  assert.strictEqual(inspect(Buffer.from('%PDF-1.4\n%%EOF'), 'empty.pdf').kind, 'pdf');
+  // 只有一行文件头、里面一个对象都没有：按文本处理（内容就是那一行），不当成一份读不出来的 PDF
+  assert.deepStrictEqual(inspect(Buffer.from('%PDF-1.4\n%%EOF'), 'empty.pdf'), { kind: 'doc', ext: 'txt', mime: 'text/plain', text: '%PDF-1.4\n%%EOF', partial: false });
 });
 
 // ---------- 真实软件生成的样本 ----------
@@ -392,7 +394,7 @@ const DOCX_TEXT = ['# 季度总结 Quarterly Review', '# 一、销售情况', '�
 
 test('样本：LibreOffice 存出来的 Word 文档（标题、制表符、列表、表格）', () => {
   const info = inspect(fixture('report.docx'), 'report.docx');
-  assert.deepStrictEqual(info, { kind: 'doc', ext: 'docx', mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', text: DOCX_TEXT });
+  assert.deepStrictEqual(info, { kind: 'doc', ext: 'docx', mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', text: DOCX_TEXT, partial: false });
 });
 
 test('样本：LibreOffice 存出来的 Excel 表格（两个工作表，带日期和公式）', () => {
@@ -473,7 +475,7 @@ test('看文件开头的字节判断类型，不相信扩展名', () => {
 
 test('纯文本文件：保留原来的扩展名，没有或不合适的用 txt', () => {
   const text = Buffer.from('# 标题\n\n内容', 'utf8');
-  assert.deepStrictEqual(inspect(text, 'notes.MD'), { kind: 'doc', ext: 'md', mime: 'text/plain', text: '# 标题\n\n内容' });
+  assert.deepStrictEqual(inspect(text, 'notes.MD'), { kind: 'doc', ext: 'md', mime: 'text/plain', text: '# 标题\n\n内容', partial: false });
   assert.strictEqual(inspect(text, 'README').ext, 'txt');
   assert.strictEqual(inspect(text, 'data.csv').ext, 'csv');
   assert.strictEqual(inspect(text, '其实是文字.png').ext, 'txt', '不能让文字文件顶着图片的扩展名');
