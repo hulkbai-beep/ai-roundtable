@@ -22,6 +22,7 @@ before(async () => {
   await app.listen(0);
   c = client(app.port);
   const r = await c.post('/api/config', {
+    lang: 'zh',
     members: { gpt: { 'github-models': { token: 'good-token', baseUrl: `http://127.0.0.1:${api.port}/inference` } } },
   });
   assert.strictEqual(r.status, 200);
@@ -150,6 +151,110 @@ test('某位成员出错：显示原因和建议，其他人照常发言', async
   } finally {
     delete process.env.MOCK_AGY_SILENT;
   }
+});
+
+test('模型和思考强度：传给命令行和接口，回复上标出来；不支持时自动忽略', async () => {
+  await c.post('/api/config', {
+    members: {
+      claude: { 'claude-cli': { model: 'opus', effort: 'high' } },
+      gpt: { 'codex-cli': { model: 'gpt-x', effort: 'low' } },
+    },
+  });
+  try {
+    await c.post('/api/new');
+    let s = await sendAndWait(c, { text: '@Claude @GPT 你好' });
+    const cl = aiMessages(s).find((m) => m.speaker === 'claude');
+    const gp = aiMessages(s).find((m) => m.speaker === 'gpt');
+    const ci = parseInfo(cl.text, 'MOCK-CLAUDE');
+    assert.strictEqual(ci.model, 'opus');
+    assert.strictEqual(ci.effort, 'high');
+    assert.strictEqual(cl.meta.effort, '思考高');
+    const gi = parseInfo(gp.text, 'MOCK-CODEX');
+    assert.strictEqual(gi.model, 'gpt-x');
+    assert.strictEqual(gi.config, 'model_reasoning_effort=low');
+    assert.strictEqual(gp.meta.effort, '思考低');
+
+    // 不认识的值不会传下去
+    await c.post('/api/config', { members: { claude: { 'claude-cli': { effort: 'bogus' } } } });
+    s = await sendAndWait(c, { text: '@Claude 再来' });
+    assert.strictEqual(parseInfo(aiMessages(s).pop().text, 'MOCK-CLAUDE').effort, undefined);
+
+    // 旧版 Claude Code 不认 --effort：去掉后照常回复，并注明
+    await c.post('/api/config', { members: { claude: { 'claude-cli': { effort: 'max' } } } });
+    process.env.MOCK_OLD_CLAUDE = '1';
+    const old = (await c.post('/api/test/claude')).json;
+    assert.ok(old.ok, old.error);
+    assert.ok(old.note.includes('思考强度'));
+  } finally {
+    delete process.env.MOCK_OLD_CLAUDE;
+    await c.post('/api/config', {
+      members: { claude: { 'claude-cli': { model: '', effort: '' } }, gpt: { 'codex-cli': { model: '', effort: '' } } },
+    });
+  }
+});
+
+test('接口的思考强度：推理模型带上 reasoning_effort / thinkingLevel，不支持的模型去掉后重试', async () => {
+  await c.post('/api/config', {
+    members: {
+      gpt: { provider: 'github-models', 'github-models': { effort: 'high' } },
+      gemini: { provider: 'gemini-api', 'gemini-api': { apiKey: 'good-key', baseUrl: `http://127.0.0.1:${api.port}`, effort: 'low' } },
+    },
+  });
+  try {
+    await c.post('/api/new');
+    let s = await sendAndWait(c, { text: '@GPT @Gemini 你好' });
+    const pick = (st, who) => aiMessages(st).filter((m) => m.speaker === who).pop();
+    let gp = pick(s, 'gpt');
+    let ge = pick(s, 'gemini');
+    assert.strictEqual(parseInfo(gp.text, 'MOCK-GPT').effort, undefined, 'gpt-4.1 不支持，应去掉后重试');
+    assert.ok(gp.meta.note.includes('思考强度'));
+    assert.strictEqual(parseInfo(ge.text, 'MOCK-GEMINI-API').level, 'low');
+    assert.strictEqual(ge.meta.effort, '思考低');
+
+    await c.post('/api/config', {
+      members: { gpt: { 'github-models': { model: 'openai/o4-mini' } }, gemini: { 'gemini-api': { model: 'gemini-flash-lite-latest' } } },
+    });
+    s = await sendAndWait(c, { text: '@GPT @Gemini 再来' });
+    gp = pick(s, 'gpt');
+    ge = pick(s, 'gemini');
+    assert.strictEqual(parseInfo(gp.text, 'MOCK-GPT').effort, 'high');
+    assert.strictEqual(gp.meta.effort, '思考高');
+    assert.strictEqual(parseInfo(ge.text, 'MOCK-GEMINI-API').level, undefined);
+    assert.ok(ge.meta.note.includes('思考强度'));
+  } finally {
+    await c.post('/api/config', {
+      members: {
+        gpt: { provider: 'codex-cli', 'github-models': { model: 'openai/gpt-4.1', effort: '' } },
+        gemini: { provider: 'agy-cli', 'gemini-api': { model: 'gemini-flash-latest', effort: '' } },
+      },
+    });
+  }
+});
+
+test('英文版：界面文字、AI 的人设和错误提示都换成英文，再换回中文', async () => {
+  let cfg = (await c.post('/api/config', { lang: 'en' })).json;
+  try {
+    assert.strictEqual(cfg.lang, 'en');
+    assert.strictEqual(cfg.providers['claude-cli'].label, 'Claude Code (Max subscription)');
+    const effort = cfg.providers['claude-cli'].fields.find((f) => f.key === 'effort');
+    assert.deepStrictEqual(effort.options[0], ['', 'Default']);
+    assert.ok(!/[\u4e00-\u9fff]/.test(JSON.stringify(cfg.providers)), '接入方式的说明里不应该还有中文');
+
+    await c.post('/api/new');
+    const s = await sendAndWait(c, { text: '@Claude hello' });
+    assert.strictEqual(s.lang, 'en');
+    assert.strictEqual(s.modes.debate, 'Debate');
+    const info = parseInfo(aiMessages(s)[0].text, 'MOCK-CLAUDE');
+    assert.strictEqual(info.systemArg, false, '英文人设里不应该有“你是 Claude”');
+    assert.strictEqual(info.systemEn, true);
+
+    const bad = await c.post('/api/send', { text: '' });
+    assert.strictEqual(bad.json.error, 'The message is empty');
+    assert.ok((await c.post('/api/test/claude')).json.ok);
+  } finally {
+    cfg = (await c.post('/api/config', { lang: 'zh' })).json;
+  }
+  assert.strictEqual(cfg.providers['claude-cli'].label, 'Claude Code（Max 订阅）');
 });
 
 test('旧版本命令行工具：不认识的参数会自动去掉再试', async () => {

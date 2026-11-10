@@ -1028,6 +1028,16 @@ textarea.input {
   flex: 1;
 }
 
+.model-pick {
+  display: flex;
+  gap: 8px;
+}
+
+.model-pick .input {
+  flex: 1;
+  min-width: 0;
+}
+
 .detect {
   font-size: 12px;
   word-break: break-all;

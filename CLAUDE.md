@@ -1,6 +1,6 @@
 # AI 圆桌：给后续开发会话的说明
 
-一个本机运行的群聊：Claude、Gemini、GPT 轮流发言、互相接话，用户是主持人。主要用户在 Windows 上，界面文字和用户沟通都用中文。
+一个本机运行的群聊：Claude、Gemini、GPT 轮流发言、互相接话，用户是主持人。主要用户在 Windows 上。界面有中文和英文两种语言；项目负责人 Tim 用英文沟通。
 
 ## 结构
 
@@ -11,6 +11,8 @@
 - `lib/providers.js`：各种接入方式。`lib/prompt.js`：人设和聊天记录拼装（太长时保留第一条话题和最近的消息）。
 - `lib/spawn.js`：Windows 上启动命令行工具（见下文）。
 - `public/`：原生 HTML/CSS/JS，不依赖任何框架；Markdown 渲染是自己写的，先转义再排版。
+
+- `lib/i18n.js`：中英文两种界面语言（设置里的 `lang`，留空 = 跟随系统）。服务端的提示和错误写成 `tr('中文', 'English')`；接入方式的说明写成 `L('中文', 'English')`，发给界面前用 `loc()` 选一种。网页里固定文字的英文写在 `index.html` 的 `data-en*` 属性里，`app.js` 里用 `T('中文', 'English')`。新增任何给用户看的文字，都要两种语言一起写。
 
 运行时没有任何第三方依赖，请保持这一点。开发依赖只有 electron 和 electron-builder。
 
