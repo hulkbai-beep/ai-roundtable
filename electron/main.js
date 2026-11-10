@@ -279,10 +279,12 @@ if (!gotLock) {
       refreshWindowsPath();
       session.defaultSession.setPermissionRequestHandler((wc, permission, cb) => cb(permission === 'clipboard-sanitized-write'));
       session.defaultSession.on('will-download', (e, item) => {
+        // 两种下载：导出对话（Markdown），和聊天记录里的附件（什么类型都有）
+        const isExport = /\/api\/export(\?|$)/.test(item.getURL());
         item.setSaveDialogOptions({
-          title: tr('导出对话', 'Export chat'),
-          defaultPath: path.join(app.getPath('documents'), item.getFilename()),
-          filters: [{ name: 'Markdown', extensions: ['md'] }],
+          title: isExport ? tr('导出对话', 'Export chat') : tr('保存附件', 'Save attachment'),
+          defaultPath: path.join(app.getPath(isExport ? 'documents' : 'downloads'), item.getFilename()),
+          ...(isExport ? { filters: [{ name: 'Markdown', extensions: ['md'] }] } : {}),
         });
       });
       const url = await startServer();

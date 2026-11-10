@@ -48,6 +48,7 @@
     queued: 0,
     typing: null,
     lastTs: 0,
+    limits: { fileMB: 15, perMessage: 10 },
   };
   let optionsFilled = false;
   let typingTimer = null;
@@ -97,13 +98,14 @@
       res = await fetch(path, opts);
     } catch {
       const e = new Error(T('连不上本地服务', 'Could not reach the local service'));
-      e.hint = RESTART_HINT;
+      e.hint = restartHint();
       throw e;
     }
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       const e = new Error(data.error || T(`请求失败（${res.status}）`, `Request failed (${res.status})`));
       e.hint = data.hint;
+      e.code = data.code;
       throw e;
     }
     return data;
@@ -113,6 +115,7 @@
   function toast(msg, kind = 'info', hint) {
     const t = $('#toast');
     t.className = `toast ${kind}`;
+    t.style.bottom = `${$('.composer').offsetHeight + 14}px`; // 输入区带着附件时会变高，提示始终显示在它上方
     t.replaceChildren(...[el('div', null, msg), hint ? el('div', { class: 'toast-hint' }, hint) : null].filter(Boolean));
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => t.classList.add('hidden'), kind === 'error' ? 8000 : 3000);
@@ -293,7 +296,7 @@
   function messageNode(m) {
     if (m.speaker === 'system') return el('div', { class: `notice ${m.level || 'info'}` }, m.text);
     if (m.speaker === 'user') {
-      return el('div', { class: 'msg user', 'data-id': m.id }, el('div', { class: 'body' }, el('div', { class: 'bubble', html: userHtml(m.text) })), avatar('user'));
+      return userMessageNode(m);
     }
     const meta = m.meta || {};
     const metaText = [meta.model, meta.effort, meta.ms ? T(`${(meta.ms / 1000).toFixed(1)} 秒`, `${(meta.ms / 1000).toFixed(1)}s`) : '', meta.note].filter(Boolean).join(' · ');
@@ -383,7 +386,8 @@
 
   function updateButtons() {
     const hasText = $('#input').value.trim().length > 0;
-    $('#btn-send').disabled = !hasText;
+    // 附件还在读取时先不让发；只有附件、没有文字也可以发
+    $('#btn-send').disabled = pending.some((p) => p.status === 'uploading') || !(hasText || pending.length);
     $('#btn-stop').classList.toggle('hidden', !state.busy);
     $('#btn-continue').classList.toggle('hidden', state.busy);
     $('#btn-continue').disabled = !state.messages.some((m) => m.speaker === 'user');
@@ -392,6 +396,276 @@
         ? T(`后面还有 ${state.queued} 次发言在排队；这时发新消息会改变后面的安排`, `${state.queued} more ${state.queued === 1 ? 'reply is' : 'replies are'} queued; a new message now will change the plan`)
         : T('最后一位正在发言', 'The last member is replying');
     $('#queue-hint').textContent = hint;
+  }
+
+  // ---------- 附件（图片和文档） ----------
+
+  // 输入区里还没发出去的附件：{ name, status: 'uploading' | 'ready', att（服务端返回的记录）, thumb（图片的预览地址） }
+  const pending = [];
+
+  function fmtSize(n) {
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
+    return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  }
+
+  const extOf = (name) => (/\.([0-9A-Za-z]{1,8})$/.exec(String(name || '')) || ['', ''])[1].toLowerCase();
+  const fileUrl = (a) => `/api/file/${encodeURIComponent(a.file)}`;
+
+  // 文件名下面那行小字：页数、读出了多少字，或者为什么读不出来
+  function fileMeta(a) {
+    if (a.kind === 'image') return fmtSize(a.size);
+    const parts = [];
+    if (a.pages) parts.push(T(`${a.pages} 页`, `${a.pages} page${a.pages === 1 ? '' : 's'}`));
+    const chars = Number(a.chars || 0).toLocaleString('en-US');
+    if (a.chars) parts.push(`${T(`读出 ${chars} 字`, `${chars} characters read`)}${a.partial ? T('（不完整）', ' (incomplete)') : ''}`);
+    else parts.push(a.encrypted ? T('加了密，读不出文字', 'encrypted, no text read') : T('读不出文字', 'no readable text'));
+    return parts.join(' · ');
+  }
+
+  // 鼠标停在附件上时的说明
+  function fileTip(a) {
+    if (a.kind !== 'pdf') return a.name;
+    return T(
+      `${a.name}\n这个 PDF 里的文字读不出来或者读不全（多半是扫描件），会把文件本身交给各位成员；看不了 PDF 的成员会说明自己看不到。`,
+      `${a.name}\nThe text in this PDF could not be read, or only partly (it is probably a scan), so the file itself is passed to each member. Members that cannot read PDFs will say so.`
+    );
+  }
+
+  function fileBadge(name) {
+    const ext = extOf(name);
+    return el('span', { class: `file-badge${ext ? ` ext-${ext}` : ''}`, 'aria-hidden': 'true' }, (ext || '?').slice(0, 4).toUpperCase());
+  }
+
+  const fileText = (name, meta) => el('span', { class: 'att-text' }, el('span', { class: 'att-name' }, name), el('span', { class: 'att-meta' }, meta));
+
+  function openLightbox(src, name) {
+    const img = $('#lightbox-img');
+    img.src = src;
+    img.alt = name || '';
+    openModal('#lightbox');
+  }
+
+  // 聊天记录里的文档：点一下保存到电脑上
+  function fileCard(a) {
+    return el('a', { class: 'att-file', href: fileUrl(a), download: a.name, title: T(`${fileTip(a)}\n点击保存`, `${fileTip(a)}\nClick to save`) }, fileBadge(a.file), fileText(a.name, fileMeta(a)));
+  }
+
+  // 聊天记录里的图片：缩略图，点开看大图
+  function imageThumb(a) {
+    const img = el('img', { src: fileUrl(a), alt: a.name, loading: 'lazy' });
+    const btn = el('button', { class: 'att-image', type: 'button', title: a.name, onclick: () => openLightbox(fileUrl(a), a.name) }, img);
+    img.addEventListener('load', () => {
+      // 图片加载出来会把下面的内容往下顶；原来在底部的话，继续贴着底部
+      const c = chat();
+      if (c.scrollHeight - c.scrollTop - c.clientHeight < 160 + img.height) toBottom();
+    });
+    img.addEventListener('error', () => btn.replaceWith(el('span', { class: 'att-file missing' }, fileBadge(a.file), fileText(a.name, T('图片文件已经不在了', 'the image file is no longer available')))));
+    return btn;
+  }
+
+  function userMessageNode(m) {
+    const files = Array.isArray(m.attachments) ? m.attachments : [];
+    const images = files.filter((a) => a.kind === 'image');
+    return el(
+      'div',
+      { class: 'msg user', 'data-id': m.id },
+      el(
+        'div',
+        { class: 'body' },
+        images.length ? el('div', { class: `att-images${images.length > 1 ? ' multi' : ''}` }, ...images.map(imageThumb)) : null,
+        ...files.filter((a) => a.kind !== 'image').map(fileCard),
+        m.text ? el('div', { class: 'bubble', html: userHtml(m.text) }) : null
+      ),
+      avatar('user')
+    );
+  }
+
+  function releaseThumb(p) {
+    if (p.thumb) URL.revokeObjectURL(p.thumb);
+    p.thumb = null;
+  }
+
+  function renderPending() {
+    const box = $('#attach-list');
+    box.classList.toggle('hidden', !pending.length);
+    box.replaceChildren(
+      ...pending.map((p) => {
+        const lead = p.thumb
+          ? el('button', { class: 'attach-thumb', type: 'button', title: T('看大图', 'View larger'), onclick: () => openLightbox(p.thumb, p.name) }, el('img', { src: p.thumb, alt: '' }))
+          : fileBadge(p.att ? p.att.file : p.name);
+        const remove = el('button', { class: 'attach-remove', type: 'button', title: T('不发这个附件', 'Remove this attachment'), 'aria-label': T(`不发 ${p.name}`, `Remove ${p.name}`), onclick: () => removePending(p) }, '\u00d7');
+        return el('div', { class: `attach-item ${p.status}`, title: p.att ? fileTip(p.att) : p.name }, lead, fileText(p.name, p.att ? fileMeta(p.att) : T('读取中……', 'Reading...')), remove);
+      })
+    );
+    updateButtons();
+  }
+
+  function removePending(p) {
+    const i = pending.indexOf(p);
+    if (i >= 0) pending.splice(i, 1);
+    p.removed = true;
+    if (p.att) api('/api/discard', { id: p.att.id }).catch(() => {});
+    releaseThumb(p);
+    renderPending();
+  }
+
+  const IMAGE_MAX_SIDE = 2400; // 图片的长边超过这个数就先缩小：各家 AI 看图时本来也会缩，原图只是白白多占上传时间和额度
+  const IMAGE_MAX_BYTES = 3 * 1024 * 1024;
+  const toBlob = (canvas, type, quality) => new Promise((resolve) => canvas.toBlob(resolve, type, quality));
+
+  // 图片在上传前整理一下：不大的 PNG / JPG 原样发；太大的缩小；其他格式（GIF、WebP、BMP……）转成 PNG 或 JPG，
+  // 因为不是每家 AI 都认这些格式。浏览器打不开的图片（比如 HEIC）原样交给服务端，由它给出提示。
+  async function prepareImage(file) {
+    const same = { blob: file, name: file.name };
+    if (!/^image\//.test(file.type) || file.type === 'image/svg+xml' || typeof createImageBitmap !== 'function') return same;
+    let bmp;
+    try {
+      bmp = await createImageBitmap(file);
+    } catch {
+      return same;
+    }
+    try {
+      const side = Math.max(bmp.width, bmp.height);
+      const plain = file.type === 'image/png' || file.type === 'image/jpeg';
+      if (plain && side <= IMAGE_MAX_SIDE && file.size <= IMAGE_MAX_BYTES) return same;
+      const scale = Math.min(1, IMAGE_MAX_SIDE / side);
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(bmp.width * scale));
+      canvas.height = Math.max(1, Math.round(bmp.height * scale));
+      const ctx = canvas.getContext('2d');
+      ctx.imageSmoothingQuality = 'high';
+      let blob = null;
+      // 截图、图标这类图用 PNG 保持清晰；照片（或者 PNG 还是太大）用 JPG，透明的地方垫白底
+      if (!/jpe?g|webp|avif/.test(file.type)) {
+        ctx.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+        blob = await toBlob(canvas, 'image/png');
+      }
+      if (!blob || blob.size > IMAGE_MAX_BYTES) {
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+        blob = await toBlob(canvas, 'image/jpeg', 0.9);
+      }
+      if (!blob) return same;
+      return { blob, name: `${file.name.replace(/\.[^.]*$/, '') || 'image'}.${blob.type === 'image/png' ? 'png' : 'jpg'}` };
+    } finally {
+      bmp.close();
+    }
+  }
+
+  function readBase64(blob, name) {
+    return new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => {
+        const url = String(r.result);
+        resolve(url.slice(url.indexOf(',') + 1));
+      };
+      r.onerror = () => reject(new Error(T(`「${name}」读不了`, `"${name}" could not be read`)));
+      r.readAsDataURL(blob);
+    });
+  }
+
+  async function uploadPending(p, file) {
+    try {
+      const { blob, name } = await prepareImage(file);
+      const max = state.limits.fileMB;
+      if (blob.size > max * 1024 * 1024) throw new Error(T(`「${name}」太大了（超过 ${max} MB）`, `"${name}" is too large (over ${max} MB)`));
+      const data = await readBase64(blob, name);
+      if (p.removed) return;
+      const { attachment } = await api('/api/upload', { name, data });
+      if (p.removed) {
+        api('/api/discard', { id: attachment.id }).catch(() => {});
+        return;
+      }
+      p.att = attachment;
+      p.name = attachment.name;
+      p.status = 'ready';
+      if (attachment.kind === 'image') p.thumb = URL.createObjectURL(blob);
+    } catch (e) {
+      const i = pending.indexOf(p);
+      if (i >= 0) pending.splice(i, 1);
+      if (!p.removed) showError(e);
+    } finally {
+      renderPending();
+    }
+  }
+
+  // 把用户选的、拖进来的或粘贴的文件加到输入区，并上传到本地服务（由它判断类型、取出文字）
+  async function addFiles(list) {
+    const files = Array.from(list || []);
+    if (!files.length) return;
+    const max = state.limits.perMessage;
+    const room = Math.max(0, max - pending.length);
+    if (files.length > room) toast(T(`一条消息最多带 ${max} 个附件`, `A message can have at most ${max} attachments`), 'error');
+    const jobs = files.slice(0, room).map((file) => ({ p: { name: file.name || T('未命名', 'untitled'), status: 'uploading' }, file }));
+    pending.push(...jobs.map((j) => j.p));
+    renderPending();
+    // 一个一个来，免得同时把好几个大文件读进内存
+    for (const { p, file } of jobs) if (!p.removed) await uploadPending(p, file);
+  }
+
+  function initAttachments() {
+    const input = $('#file-input');
+    $('#btn-attach').addEventListener('click', () => input.click());
+    input.addEventListener('change', () => {
+      addFiles(input.files);
+      input.value = '';
+    });
+
+    // 粘贴：剪贴板里只有图片或文件时（截图、从资源管理器复制的文件）加成附件；带文字的照常粘贴文字
+    document.addEventListener('paste', (e) => {
+      const cd = e.clipboardData;
+      if (!cd || !cd.files || !cd.files.length || cd.getData('text/plain')) return;
+      if (e.target instanceof Element && e.target.closest('input, textarea, select') && e.target.id !== 'input') return;
+      e.preventDefault();
+      addFiles(cd.files);
+    });
+
+    // 拖放：整个窗口都可以放。不拦下来的话，浏览器会直接打开拖进来的文件，把聊天页面换掉
+    const overlay = $('#drop-overlay');
+    const hasFiles = (e) => Boolean(e.dataTransfer) && Array.from(e.dataTransfer.types || []).includes('Files');
+    let depth = 0;
+    const hide = () => {
+      depth = 0;
+      overlay.classList.add('hidden');
+    };
+    window.addEventListener('dragenter', (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      depth++;
+      overlay.classList.remove('hidden');
+    });
+    window.addEventListener('dragover', (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+    });
+    window.addEventListener('dragleave', (e) => {
+      if (!hasFiles(e)) return;
+      depth = Math.max(0, depth - 1);
+      if (!depth) hide();
+    });
+    window.addEventListener('drop', (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      hide();
+      const files = [];
+      let folders = 0;
+      for (const item of Array.from(e.dataTransfer.items || [])) {
+        if (item.kind !== 'file') continue;
+        const entry = item.webkitGetAsEntry ? item.webkitGetAsEntry() : null;
+        if (entry && entry.isDirectory) folders++;
+        else {
+          const f = item.getAsFile();
+          if (f) files.push(f);
+        }
+      }
+      if (folders) toast(T('文件夹不能直接添加，请把里面的文件拖进来', 'Folders cannot be added; drag in the files inside instead'), 'error');
+      addFiles(files.length || folders ? files : e.dataTransfer.files);
+    });
+
+    $('#lightbox').addEventListener('click', () => closeModal('#lightbox'));
   }
 
   // ---------- 输入区 ----------
@@ -437,16 +711,23 @@
   async function send() {
     const ta = $('#input');
     const text = ta.value.trim();
-    if (!text) return;
+    if (pending.some((p) => p.status === 'uploading')) return toast(T('附件还在读取，稍等一下再发', 'Still reading the attachments; send in a moment'));
+    if (!text && !pending.length) return;
+    // 先把输入区清空；发送失败再放回去
+    const files = pending.splice(0, pending.length);
     ta.value = '';
+    renderPending();
     autosize();
-    updateButtons();
     try {
-      await api('/api/send', { text, ...currentOpts() });
+      await api('/api/send', { text, attachments: files.map((p) => p.att.id), ...currentOpts() });
+      files.forEach(releaseThumb);
     } catch (e) {
       ta.value = text;
+      // 服务重启过的话，之前上传的附件已经失效，只能重新添加
+      if (e.code === 'attachments-gone') files.forEach(releaseThumb);
+      else pending.unshift(...files);
+      renderPending();
       autosize();
-      updateButtons();
       showError(e);
     }
   }
@@ -806,6 +1087,7 @@
     state.members = s.members || [];
     state.modes = s.modes || state.modes;
     state.lengths = s.lengths || state.lengths;
+    state.limits = s.limits || state.limits;
     state.busy = s.state.busy;
     state.queued = s.state.queued;
     state.typing = s.state.typing;
@@ -861,6 +1143,7 @@
     if (DESKTOP) document.documentElement.classList.add('desktop');
     LANG = prefs.get('lang', LANG) === 'en' ? 'en' : 'zh';
     applyStaticLang();
+    initAttachments();
     const ta = $('#input');
     ta.addEventListener('input', () => {
       autosize();
