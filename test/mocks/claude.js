@@ -48,6 +48,7 @@ process.stdin.on('end', () => {
     systemLines: sys >= 0 ? args[sys + 1].split('\n').length : 0,
     toolsDisabled: tools >= 0 && args[tools + 1] === '',
     tools: tools >= 0 ? args[tools + 1] : undefined,
+    filesRule: sys >= 0 && args[sys + 1].includes('除了查看主持人发来的附件') ? true : undefined,
     files: listedFiles(input),
     attachments: (input.match(/^<附件 编号="\d+"/gm) || []).length || undefined,
     stdinHasSystem: input.includes('你是 Claude'),
