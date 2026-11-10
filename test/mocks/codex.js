@@ -18,6 +18,8 @@ process.stdin.on('end', () => {
     stdinDash: args[args.length - 1] === '-',
     hasSystem: input.includes('你是 GPT'),
     blocks: (input.match(/^【[^】\n]+】$/gm) || []).length,
+    model: args.includes('-m') ? args[args.indexOf('-m') + 1] : undefined,
+    config: args.includes('-c') ? args[args.indexOf('-c') + 1] : undefined,
   };
   const text = input.includes('请只回复两个字') ? '在线' : `MOCK-CODEX ${JSON.stringify(info)}`;
   if (o >= 0) fs.writeFileSync(args[o + 1], text);

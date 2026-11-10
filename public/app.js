@@ -85,7 +85,7 @@
   function toast(msg, kind = 'info', hint) {
     const t = $('#toast');
     t.className = `toast ${kind}`;
-    t.replaceChildren(el('div', null, msg), hint ? el('div', { class: 'toast-hint' }, hint) : null);
+    t.replaceChildren(...[el('div', null, msg), hint ? el('div', { class: 'toast-hint' }, hint) : null].filter(Boolean));
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => t.classList.add('hidden'), kind === 'error' ? 8000 : 3000);
   }
@@ -267,7 +267,7 @@
       return el('div', { class: 'msg user', 'data-id': m.id }, el('div', { class: 'body' }, el('div', { class: 'bubble', html: userHtml(m.text) })), avatar('user'));
     }
     const meta = m.meta || {};
-    const metaText = [meta.model, meta.ms ? `${(meta.ms / 1000).toFixed(1)} 秒` : '', meta.note].filter(Boolean).join(' · ');
+    const metaText = [meta.model, meta.effort, meta.ms ? `${(meta.ms / 1000).toFixed(1)} 秒` : '', meta.note].filter(Boolean).join(' · ');
     const copyBtn = el('button', { class: 'copy', type: 'button', title: '复制这条回复' }, '复制');
     copyBtn.addEventListener('click', () => copyText(m.text, copyBtn));
     return el(
@@ -558,10 +558,10 @@
         const r = await api(`/api/test/${id}`, {});
         if (r.ok) {
           result.className = 'test-result ok';
-          result.textContent = `✓ 连上了（${(r.ms / 1000).toFixed(1)} 秒）回复：“${r.reply}”${r.model ? ` · ${r.model}` : ''}`;
+          result.textContent = `✓ 连上了（${(r.ms / 1000).toFixed(1)} 秒）回复：“${r.reply}”${[r.model, r.effort, r.note].filter(Boolean).map((x) => ` · ${x}`).join('')}`;
         } else {
           result.className = 'test-result bad';
-          result.replaceChildren(el('div', null, `✗ ${r.error}`), r.hint ? el('div', null, `建议：${r.hint}`) : null);
+          result.replaceChildren(...[el('div', null, `✗ ${r.error}`), r.hint ? el('div', null, `建议：${r.hint}`) : null].filter(Boolean));
         }
       } catch (e) {
         result.className = 'test-result bad';
@@ -599,6 +599,32 @@
         input.value = values[f.key] || f.options[0][0];
         input.addEventListener('change', () => (values[f.key] = input.value));
         control = input;
+      } else if (f.type === 'model') {
+        // 下拉选常用模型；“自定义”时显示输入框
+        const CUSTOM = '__custom__';
+        const cur = values[f.key] || '';
+        const known = f.choices.some(([v]) => v === cur);
+        const sel = el(
+          'select',
+          { class: 'input' },
+          el('option', { value: '' }, '默认'),
+          ...f.choices.map(([v, label]) => el('option', { value: v }, label)),
+          el('option', { value: CUSTOM }, '自定义…')
+        );
+        input = el('input', { class: 'input', type: 'text', spellcheck: 'false', placeholder: f.placeholder || '' });
+        input.value = known ? '' : cur;
+        sel.value = !cur ? '' : known ? cur : CUSTOM;
+        const sync = () => {
+          input.classList.toggle('hidden', sel.value !== CUSTOM);
+          values[f.key] = sel.value === CUSTOM ? input.value.trim() : sel.value;
+        };
+        sel.addEventListener('change', () => {
+          sync();
+          if (sel.value === CUSTOM) input.focus();
+        });
+        input.addEventListener('input', sync);
+        input.classList.toggle('hidden', sel.value !== CUSTOM);
+        control = el('div', { class: 'model-pick' }, sel, input);
       } else if (f.type === 'number') {
         input = el('input', { class: 'input', type: 'number', min: '1000', step: '1000' });
         input.value = values[f.key] == null ? '' : values[f.key];
