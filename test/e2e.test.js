@@ -468,6 +468,13 @@ test('安全：拒绝其他网站和非本机 Host 的请求', async () => {
   assert.strictEqual(await raw({ Host: 'evil.example.com' }), 403);
   assert.strictEqual(await raw({ Host: `127.0.0.1:${app.port}`, Origin: 'http://evil.example.com', 'Content-Type': 'application/json' }, 'POST', '/api/stop'), 403);
   assert.strictEqual(await raw({ Host: `127.0.0.1:${app.port}`, 'Content-Type': 'application/x-www-form-urlencoded' }, 'POST', '/api/stop'), 415);
+  // 只认 application/json：别的网站不经预检就能发的那几种类型（text/plain 等）一律不收，后面带上 “application/json” 字样也不行
+  for (const type of ['text/plain', 'text/plain; application/json', 'text/plain;charset=application/json', 'multipart/form-data; boundary=application/json', 'application/jsonp', '']) {
+    assert.strictEqual(await raw({ Host: `127.0.0.1:${app.port}`, 'Content-Type': type }, 'POST', '/api/stop'), 415, type);
+  }
+  for (const type of ['application/json', 'application/json; charset=utf-8', 'Application/JSON;charset=UTF-8', ' application/json ']) {
+    assert.strictEqual(await raw({ Host: `127.0.0.1:${app.port}`, 'Content-Type': type }, 'POST', '/api/stop'), 200, type);
+  }
   assert.strictEqual(await raw({ Host: `127.0.0.1:${app.port}` }, 'GET', '/../package.json'), 404);
 });
 
