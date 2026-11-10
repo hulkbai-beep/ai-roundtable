@@ -27,13 +27,16 @@ function startMockApi() {
       }
       if (req.url === '/inference/chat/completions') {
         if (req.headers.authorization !== 'Bearer good-token') return send(401, { error: { message: 'Bad credentials' } });
-        if (mode === '429') return send(429, { error: { message: 'Rate limit of 50 per 86400s exceeded for UserByModelByDay.' } });
+        if (mode === '429') {
+          res.setHeader('retry-after', '120');
+          return send(429, { error: { message: 'Rate limit of 50 per 86400s exceeded for UserByModelByDay.' } });
+        }
         // 模拟非推理模型不认 reasoning_effort
         if (j.reasoning_effort && !/\/o\d/.test(j.model)) return send(400, { error: { message: "Unsupported parameter: 'reasoning_effort' is not supported with this model." } });
         const user = j.messages.find((m) => m.role === 'user').content;
         const info = { model: j.model, effort: j.reasoning_effort, system: j.messages.some((m) => m.role === 'system' && m.content.includes('你是 GPT')), blocks: (user.match(/^【[^】\n]+】$/gm) || []).length };
         const content = user.includes('请只回复两个字') ? '在线' : `GPT：MOCK-GPT ${JSON.stringify(info)}`;
-        return send(200, { model: j.model, choices: [{ message: { role: 'assistant', content }, finish_reason: 'stop' }] });
+        return send(200, { model: j.model, choices: [{ message: { role: 'assistant', content }, finish_reason: 'stop' }], usage: { prompt_tokens: 300, completion_tokens: 40, total_tokens: 340 } });
       }
       const g = req.url.match(/^\/v1beta\/models\/([^:]+):generateContent$/);
       if (g) {
@@ -42,7 +45,7 @@ function startMockApi() {
         if (level && /lite/.test(g[1])) return send(400, { error: { message: 'Thinking level is not supported for this model.' } });
         const text = j.contents[0].parts[0].text;
         const reply = text.includes('请只回复两个字') ? '在线' : `MOCK-GEMINI-API ${JSON.stringify({ system: !!j.systemInstruction, level })}`;
-        return send(200, { modelVersion: g[1], candidates: [{ content: { parts: [{ text: '（思考过程）', thought: true }, { text: reply }] } }] });
+        return send(200, { modelVersion: g[1], usageMetadata: { promptTokenCount: 200, candidatesTokenCount: 30, thoughtsTokenCount: 20, totalTokenCount: 250 }, candidates: [{ content: { parts: [{ text: '（思考过程）', thought: true }, { text: reply }] } }] });
       }
       send(404, {});
     });

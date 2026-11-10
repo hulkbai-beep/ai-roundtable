@@ -2,6 +2,11 @@
 // 模拟 `agy -p "<提示词>"`：提示词在命令行参数里（或者 -p 后面没有内容时从标准输入读）。
 const args = process.argv.slice(2);
 if (process.env.MOCK_AGY_SILENT) process.exit(0);
+// 模拟 AI Pro 额度用完（不说什么时候恢复）
+if (process.env.MOCK_AGY_LIMIT) {
+  console.error('Error: RESOURCE_EXHAUSTED: Quota exceeded for this account.');
+  process.exit(1);
+}
 function answer(prompt) {
   const info = {
     blocks: (prompt.match(/^【[^】\n]+】$/gm) || []).length,

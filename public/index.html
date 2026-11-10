@@ -25,6 +25,9 @@
         <button class="icon-btn" id="btn-history" type="button" title="历史对话" aria-label="历史对话" data-en-title="Chat history">
           <svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7" /><path d="M3 4v4h4" /><path d="M12 7v5l3 2" /></svg>
         </button>
+        <button class="icon-btn" id="btn-usage" type="button" title="用量" aria-label="用量" data-en-title="Usage">
+          <svg viewBox="0 0 24 24"><path d="M4 20V10" /><path d="M10 20V4" /><path d="M16 20v-7" /><path d="M22 20H2" /></svg>
+        </button>
         <button class="icon-btn" id="btn-export" type="button" title="导出为 Markdown" aria-label="导出为 Markdown" data-en-title="Export as Markdown">
           <svg viewBox="0 0 24 24"><path d="M12 4v11" /><path d="m7 10 5 5 5-5" /><path d="M5 20h14" /></svg>
         </button>
@@ -38,6 +41,8 @@
     </header>
 
     <div class="conn-banner hidden" id="conn-banner" role="status">与本地服务断开了，正在重连…（如果关掉了黑色的命令行窗口，请重新双击 start.bat）</div>
+
+    <div class="limit-banner hidden" id="limit-banner" role="alert"></div>
 
     <main class="chat" id="chat">
       <div class="chat-inner">
@@ -108,6 +113,18 @@
         </button>
       </header>
       <div class="dialog-body" id="history-body"></div>
+    </div>
+  </div>
+
+  <div class="modal hidden" id="usage-modal" role="dialog" aria-modal="true" aria-labelledby="usage-title">
+    <div class="dialog">
+      <header class="dialog-head">
+        <h2 id="usage-title" data-en="Usage">用量</h2>
+        <button class="icon-btn" type="button" data-close aria-label="关闭" data-en-title="Close">
+          <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18" /></svg>
+        </button>
+      </header>
+      <div class="dialog-body" id="usage-body"></div>
     </div>
   </div>
 

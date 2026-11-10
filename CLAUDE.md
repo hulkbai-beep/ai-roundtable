@@ -23,6 +23,7 @@
 - **GPT 默认用 Codex CLI**（`codex exec --sandbox read-only -o <文件> -`，提示词从标准输入传），用户用 ChatGPT 账号登录，免费账号也能用（OpenAI 可能只是限时开放）。1.0.1 起默认从 GitHub Models 换成了 Codex：`lib/store.js` 会把 version 1 配置里的 github-models 迁移成 codex-cli。备选是 GitHub Models 免费额度（`https://models.github.ai/inference`，fine-grained token 需要 models:read；免费档每次请求约 8000 token，所以只带 5000 字聊天记录）和自定义 OpenAI 兼容接口。
 - **Windows 启动策略**：.exe 直接启动（Node 负责参数转义）；npm 生成的 .cmd 会被解析成“node + 脚本”直接启动（优先用 npm 目录里的 node.exe，其次 PATH 里的 node，桌面版没有 Node 时用 Electron 自带的，设置 `ELECTRON_RUN_AS_NODE=1`）；其他 .cmd 只能经过 cmd.exe，这时只传简单参数，人设并进标准输入。
 - **兼容不同版本**：可选参数分组传递，命令行报“不认识的参数”时去掉那一组再试（`runAdaptive`）。
+- **用量和额度用完**（`lib/usage.js`，数据在 `usage.json`）：每次发言记录 token。Claude 读 JSON 里的 `usage`（输入 + 缓存 + 输出），Codex 读输出末尾的 `tokens used`，接口读 `usage` / `usageMetadata`；agy 不报用量，按字数估算并标 ≈。额度用完靠报错识别（`providers.js` 的 `detectLimit` / `parseResetAt`，HTTP 429 也算），错误带 `e.limit = { resetAt }`。标记跟着接入方式走（换了接入方式就不算），读不出恢复时间时一小时后自动再试；被标记的成员在轮流发言里跳过、也不写进其他人的人设，@点名或连接测试成功会清掉标记。各家真实的报错文字没有在真机上核对过，`test/mocks/` 里的写法来自公开资料。
 - 没有用 `--safe-mode`：担心它让 Claude Code 忽略 settings.json 里配置的代理等环境变量。
 
 ## 测试
