@@ -256,6 +256,28 @@ test('纯文本：西欧语言的旧文件（Windows-1252）也认得，而且�
   assert.strictEqual(decodeText(Buffer.from([0x61, 0x62, 0x63, 0x20, 0x81, 0x20, 0x64, 0x65, 0x66, 0x20, 0x8d])), null);
 });
 
+test('纯文本：终端日志里的颜色控制码去掉；开头是文字、后面是二进制内容的文件不算文本', () => {
+  const ESC = String.fromCharCode(27);
+  const BEL = String.fromCharCode(7);
+  // 带颜色的构建日志：每行好几个控制码，按字数算早就超过“控制字符太多”的线了
+  const line = `${ESC}[1m${ESC}[32m✔${ESC}[0m build ok ${ESC}[90m(12 ms)${ESC}[0m${ESC}[K\n`;
+  const log = `${ESC}]0;npm run build${BEL}${line.repeat(300)}${ESC}[?25hdone`;
+  assert.strictEqual(decodeText(Buffer.from(log, 'utf8')), `${'✔ build ok (12 ms)\n'.repeat(300)}done`);
+  assert.strictEqual(inspect(Buffer.from(log, 'utf8'), 'build.log').ext, 'log');
+  // 没写完的控制码不会把后面的内容吃掉
+  assert.strictEqual(decodeText(Buffer.from(`标题 ${ESC}]没有结束的标题\n正文还在\n${'正常的一行。\n'.repeat(50)}`, 'utf8')), `标题 ]没有结束的标题\n正文还在\n${'正常的一行。\n'.repeat(49)}正常的一行。`);
+
+  // 前面几万字是文字，后面是二进制内容：看中间和结尾就能认出来
+  const head = Buffer.from('A header that reads like plain text.\n'.repeat(3000));
+  const noise = Buffer.alloc(200000);
+  for (let i = 0; i < noise.length; i++) noise[i] = (i * 151 + 7) & 0xff;
+  assert.strictEqual(decodeText(Buffer.concat([head, noise])), null);
+  assert.strictEqual(decodeText(Buffer.concat([head, noise, head])), null);
+  assert.throws(() => inspect(Buffer.concat([head, noise]), 'mixed.dat'), /这种文件读不了/);
+  // 真正的长文本不受影响
+  assert.strictEqual(decodeText(Buffer.concat([head, head, head])).length, head.length * 3 - 1);
+});
+
 test('纯文本：二进制文件认不出来，特别长的只留开头', () => {
   const bytes = Buffer.alloc(4096);
   for (let i = 0; i < bytes.length; i++) bytes[i] = (i * 151 + 7) & 0xff;
