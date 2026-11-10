@@ -111,22 +111,26 @@ test('@点名：只有被点到的人按顺序回答', async () => {
 });
 
 test('各自回答：大家同时回答，互相看不到这一轮的回答', async () => {
-  process.env.MOCK_DELAY = '1500';
+  // 模拟的 claude 和 agy 等 2.5 秒才回复，codex 马上回复
+  process.env.MOCK_DELAY = '2500';
   try {
     await c.post('/api/new');
     const r = await c.post('/api/send', { text: '用一句话解释量子纠缠', mode: 'independent', rounds: 1 });
     assert.strictEqual(r.status, 200);
-    // 三位同时在回答，后面没有排队的发言
+    // 一发出去三位就都在回答，后面没有排队的发言
+    const start = (await c.get('/api/state')).json;
+    assert.deepStrictEqual(start.state.typing.map((t) => t.speaker).sort(), ALL);
+    assert.deepStrictEqual({ busy: start.state.busy, queued: start.state.queued }, { busy: true, queued: 0 });
+    // 排在最后的 GPT 先答完了，这时排在前面的 Claude 和 Gemini 还在回答：说明不是一个一个轮着来的
     const mid = await waitFor(
       async () => {
         const s = (await c.get('/api/state')).json;
-        return s.state.typing.length === 3 && s;
+        return aiMessages(s).length > 0 && s;
       },
-      { timeout: 5000, interval: 50, label: 'all three members to be replying at once' }
+      { timeout: 10000, interval: 50, label: 'the first answer to arrive' }
     );
-    assert.deepStrictEqual(mid.state.typing.map((t) => t.speaker).sort(), ALL);
-    assert.deepStrictEqual({ busy: mid.state.busy, queued: mid.state.queued }, { busy: true, queued: 0 });
-    assert.strictEqual(aiMessages(mid).length, 0);
+    assert.deepStrictEqual(aiMessages(mid).map((m) => m.speaker), ['gpt']);
+    assert.deepStrictEqual(mid.state.typing.map((t) => t.speaker).sort(), ['claude', 'gemini']);
 
     const s = await waitIdle(c);
     const ai = aiMessages(s);
@@ -148,19 +152,21 @@ test('各自回答两轮：每一轮都是大家一起回答，第二轮只看�
   assert.deepStrictEqual(ai.map(blocksOf), [1, 1, 1, 2, 2, 2]);
 });
 
-test('停止：大家同时回答时，一次停掉所有正在回答的成员', async () => {
+test('停止：大家同时回答时，一次停掉所有还在回答的成员', async () => {
   process.env.MOCK_DELAY = '3000';
   try {
     await c.post('/api/new');
     await c.post('/api/send', { text: '各自说说，说两轮', mode: 'independent', rounds: 2 });
-    await waitFor(async () => (await typingNow()).length === 3, { timeout: 5000, interval: 50, label: 'all three members to be replying at once' });
+    // 等 GPT 先答完（模拟的 codex 不会等），这时 Claude 和 Gemini 还在回答，第二轮在排队
+    await waitFor(async () => aiMessages((await c.get('/api/state')).json).length === 1, { timeout: 10000, interval: 50, label: 'the first answer to arrive' });
+    assert.deepStrictEqual(await typingNow(), ['claude', 'gemini']);
     const r = (await c.post('/api/stop')).json;
     assert.strictEqual(r.stopped, true);
     const s = await waitIdle(c, 10000);
     const notes = s.messages.filter((m) => m.speaker === 'system');
-    assert.strictEqual(notes.length, 1, '三位一起停，只说明一次');
-    assert.strictEqual(notes[0].text, '已停止 Claude、Gemini、GPT 的发言');
-    assert.strictEqual(aiMessages(s).length, 0, '没说完的回答不会出现，第二轮也取消了');
+    assert.strictEqual(notes.length, 1, '两位一起停，只说明一次');
+    assert.strictEqual(notes[0].text, '已停止 Claude、Gemini 的发言');
+    assert.deepStrictEqual(aiMessages(s).map((m) => m.speaker), ['gpt'], '已经答完的留着，没答完的不会出现，第二轮也取消了');
     assert.deepStrictEqual(s.state, { busy: false, queued: 0, typing: [] });
   } finally {
     delete process.env.MOCK_DELAY;

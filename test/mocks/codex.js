@@ -27,10 +27,7 @@ process.stdin.on('end', () => {
     config: args.includes('-c') ? args[args.indexOf('-c') + 1] : undefined,
   };
   const text = input.includes('请只回复两个字') ? '在线' : `MOCK-CODEX ${JSON.stringify(info)}`;
-  // 和另外两个模拟命令一样，可以用 MOCK_DELAY 让它慢一点再回复
-  setTimeout(() => {
-    if (o >= 0) fs.writeFileSync(args[o + 1], text);
-    console.log(text);
-    process.stderr.write('tokens used\n1,234\n');
-  }, Number(process.env.MOCK_DELAY || 0));
+  if (o >= 0) fs.writeFileSync(args[o + 1], text);
+  console.log(text);
+  process.stderr.write('tokens used\n1,234\n');
 });
