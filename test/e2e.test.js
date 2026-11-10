@@ -8,11 +8,17 @@ const assert = require('assert');
 const path = require('path');
 const { createAppServer } = require('../lib/app-server');
 const { startMockApi } = require('./mocks/api');
-const { ROOT, MOCKS, IS_WIN, tmpDir, makeBin, makeMockBins, client, sendAndWait, waitIdle, aiMessages, parseInfo, sleep } = require('./helpers');
+const { ROOT, MOCKS, IS_WIN, tmpDir, makeBin, makeMockBins, client, sendAndWait, waitIdle, waitFor, aiMessages, parseInfo, sleep } = require('./helpers');
 
 let app;
 let api;
 let c;
+
+const TAGS = { claude: 'MOCK-CLAUDE', gemini: 'MOCK-AGY', gpt: 'MOCK-CODEX' };
+const ALL = ['claude', 'gemini', 'gpt'];
+// 模拟的 AI 会报告自己看到了几条聊天记录
+const blocksOf = (m) => parseInfo(m.text, TAGS[m.speaker]).blocks;
+const typingNow = async () => (await c.get('/api/state')).json.state.typing.map((t) => t.speaker).sort();
 
 before(async () => {
   const bin = makeMockBins(tmpDir('rt-bin-'));
@@ -21,8 +27,10 @@ before(async () => {
   app = createAppServer({ dataDir: tmpDir('rt-data-'), publicDir: path.join(ROOT, 'public') });
   await app.listen(0);
   c = client(app.port);
+  // 默认每条消息会换一个发言顺序；这里先关掉，下面的测试才能按固定的顺序检查（换顺序另有测试）
   const r = await c.post('/api/config', {
     lang: 'zh',
+    shuffleOrder: false,
     members: { gpt: { 'github-models': { token: 'good-token', baseUrl: `http://127.0.0.1:${api.port}/inference` } } },
   });
   assert.strictEqual(r.status, 200);
@@ -43,8 +51,11 @@ test('能找到三个命令行工具，网页能打开', async () => {
   assert.strictEqual(ping.app, 'ai-roundtable');
 });
 
-test('默认配置：GPT 用 Codex CLI', async () => {
+test('默认配置：GPT 用 Codex CLI，每条消息换一个发言顺序', async () => {
+  const { DEFAULTS } = require('../lib/store');
+  assert.strictEqual(DEFAULTS.shuffleOrder, true);
   const cfg = (await c.get('/api/config')).json;
+  assert.strictEqual(cfg.config.shuffleOrder, false, '上面关掉了，设置要能存住');
   assert.strictEqual(cfg.config.members.gpt.provider, 'codex-cli');
   const options = Object.entries(cfg.providers)
     .filter(([, p]) => p.member === 'gpt')
@@ -99,12 +110,124 @@ test('@点名：只有被点到的人按顺序回答', async () => {
   );
 });
 
-test('各自回答：看不到别人这一轮的回答', async () => {
+test('各自回答：大家同时回答，互相看不到这一轮的回答', async () => {
+  process.env.MOCK_DELAY = '1500';
+  try {
+    await c.post('/api/new');
+    const r = await c.post('/api/send', { text: '用一句话解释量子纠缠', mode: 'independent', rounds: 1 });
+    assert.strictEqual(r.status, 200);
+    // 三位同时在回答，后面没有排队的发言
+    const mid = await waitFor(
+      async () => {
+        const s = (await c.get('/api/state')).json;
+        return s.state.typing.length === 3 && s;
+      },
+      { timeout: 5000, interval: 50, label: 'all three members to be replying at once' }
+    );
+    assert.deepStrictEqual(mid.state.typing.map((t) => t.speaker).sort(), ALL);
+    assert.deepStrictEqual({ busy: mid.state.busy, queued: mid.state.queued }, { busy: true, queued: 0 });
+    assert.strictEqual(aiMessages(mid).length, 0);
+
+    const s = await waitIdle(c);
+    const ai = aiMessages(s);
+    assert.deepStrictEqual(ai.map((m) => m.speaker).sort(), ALL);
+    for (const m of ai) assert.strictEqual(blocksOf(m), 1, `${m.speaker} 不应该看到别人这一轮的回答`);
+    assert.deepStrictEqual(s.state, { busy: false, queued: 0, typing: [] });
+  } finally {
+    delete process.env.MOCK_DELAY;
+  }
+});
+
+test('各自回答两轮：每一轮都是大家一起回答，第二轮只看得到自己上一轮说的', async () => {
   await c.post('/api/new');
-  const s = await sendAndWait(c, { text: '用一句话解释量子纠缠', mode: 'independent', rounds: 1 });
+  const s = await sendAndWait(c, { text: '各自说两轮', mode: 'independent', rounds: 2 });
   const ai = aiMessages(s);
-  assert.strictEqual(parseInfo(ai[1].text, 'MOCK-AGY').blocks, 1);
-  assert.strictEqual(parseInfo(ai[2].text, 'MOCK-CODEX').blocks, 1);
+  assert.strictEqual(ai.length, 6);
+  assert.deepStrictEqual(ai.slice(0, 3).map((m) => m.speaker).sort(), ALL, '第一轮三位都说完，才开始第二轮');
+  assert.deepStrictEqual(ai.slice(3).map((m) => m.speaker).sort(), ALL);
+  assert.deepStrictEqual(ai.map(blocksOf), [1, 1, 1, 2, 2, 2]);
+});
+
+test('停止：大家同时回答时，一次停掉所有正在回答的成员', async () => {
+  process.env.MOCK_DELAY = '3000';
+  try {
+    await c.post('/api/new');
+    await c.post('/api/send', { text: '各自说说，说两轮', mode: 'independent', rounds: 2 });
+    await waitFor(async () => (await typingNow()).length === 3, { timeout: 5000, interval: 50, label: 'all three members to be replying at once' });
+    const r = (await c.post('/api/stop')).json;
+    assert.strictEqual(r.stopped, true);
+    const s = await waitIdle(c, 10000);
+    const notes = s.messages.filter((m) => m.speaker === 'system');
+    assert.strictEqual(notes.length, 1, '三位一起停，只说明一次');
+    assert.strictEqual(notes[0].text, '已停止 Claude、Gemini、GPT 的发言');
+    assert.strictEqual(aiMessages(s).length, 0, '没说完的回答不会出现，第二轮也取消了');
+    assert.deepStrictEqual(s.state, { busy: false, queued: 0, typing: [] });
+  } finally {
+    delete process.env.MOCK_DELAY;
+  }
+});
+
+test('各自回答时点名两位：按点名的顺序轮流说，后面的人能看到前面的回答', async () => {
+  await c.post('/api/new');
+  const s = await sendAndWait(c, { text: '@GPT 你先写，@Claude 来改', mode: 'independent', rounds: 2 });
+  const ai = aiMessages(s);
+  assert.deepStrictEqual(
+    ai.map((m) => m.speaker),
+    ['gpt', 'claude']
+  );
+  assert.strictEqual(blocksOf(ai[0]), 1);
+  assert.strictEqual(blocksOf(ai[1]), 2, 'Claude 要能看到 GPT 刚写的内容');
+
+  // 只点一位：还是各自回答，看不到别人在这条消息之后说的话
+  const one = await sendAndWait(c, { text: '@Gemini 你也说说', mode: 'independent' });
+  const last = aiMessages(one).pop();
+  assert.strictEqual(last.speaker, 'gemini');
+  assert.strictEqual(blocksOf(last), 4, '前面的 3 条记录 + 这条消息');
+});
+
+test('换顺序：自由讨论和辩论每条消息换一个发言顺序，合作模式按排好的顺序', async () => {
+  await c.post('/api/config', { shuffleOrder: true });
+  try {
+    await c.post('/api/new');
+    let seen = 0;
+    let prevFirst = null;
+    const orders = [];
+    for (let i = 0; i < 4; i++) {
+      const s = await sendAndWait(c, { text: `第 ${i + 1} 个话题`, mode: i % 2 ? 'debate' : 'discuss', rounds: 2 });
+      const ai = aiMessages(s).slice(seen);
+      seen += ai.length;
+      const order = ai.slice(0, 3).map((m) => m.speaker);
+      assert.deepStrictEqual([...order].sort(), ALL, '每一轮三位都说一次');
+      assert.deepStrictEqual(ai.slice(3).map((m) => m.speaker), order, '同一条消息的第二轮顺序不变');
+      assert.notStrictEqual(order[0], prevFirst, '不会连着两条消息都由同一位先说');
+      prevFirst = order[0];
+      orders.push(order.join(' '));
+    }
+    // 还是轮流说：后面的人能看到前面所有人的发言
+    const all = (await c.get('/api/state')).json.messages.filter((m) => m.speaker !== 'system');
+    all.forEach((m, i) => {
+      if (m.speaker !== 'user') assert.strictEqual(blocksOf(m), i, `第 ${i + 1} 条消息应该看得到前面的 ${i} 条`);
+    });
+
+    // 继续聊：刚说完话的那位不会紧接着再说
+    for (let i = 0; i < 3; i++) {
+      const before = (await c.get('/api/state')).json.messages;
+      await c.post('/api/continue', { mode: 'discuss', rounds: 1 });
+      const s = await waitIdle(c);
+      const added = s.messages.slice(before.length).map((m) => m.speaker);
+      assert.deepStrictEqual([...added].sort(), ALL);
+      assert.notStrictEqual(added[0], before[before.length - 1].speaker, `刚说完的又先说了：${added}`);
+    }
+
+    // 合作模式要在前面的人的成果上接着做，所以不换顺序
+    for (let i = 0; i < 2; i++) {
+      const s = await sendAndWait(c, { text: `一起写点东西 ${i}`, mode: 'collab' });
+      assert.deepStrictEqual(aiMessages(s).slice(-3).map((m) => m.speaker), ALL);
+    }
+    console.log('shuffled orders:', orders.join(' | '));
+  } finally {
+    await c.post('/api/config', { shuffleOrder: false });
+  }
 });
 
 test('停止：打断正在说话的成员，取消后面的发言', async () => {

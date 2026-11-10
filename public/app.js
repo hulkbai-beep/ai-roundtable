@@ -46,11 +46,14 @@
     lengths: {},
     busy: false,
     queued: 0,
-    typing: null,
+    typing: [], // 正在发言的成员；“各自回答”时大家同时回答，会有好几位
     lastTs: 0,
   };
   let optionsFilled = false;
   let typingTimer = null;
+  let shownTyping = new Set();
+  // 几位成员同时回答的时候：{ first: 这一批里第一条到达的回复 }；平时是 null
+  let burst = null;
 
   // ---------- 小工具 ----------
 
@@ -97,7 +100,7 @@
       res = await fetch(path, opts);
     } catch {
       const e = new Error(T('连不上本地服务', 'Could not reach the local service'));
-      e.hint = RESTART_HINT;
+      e.hint = restartHint();
       throw e;
     }
     const data = await res.json().catch(() => ({}));
@@ -349,6 +352,14 @@
     );
   }
 
+  // 几位成员同时回答时，回复会接连到达。第一条和平时一样跟到最下面；后面的只在
+  // “第一条的开头还看得见”的范围内往下跟：回答短就能一起看到，回答长也不会把正在读的那条顶出画面。
+  function followBurst(first) {
+    const c = chat();
+    const room = first.getBoundingClientRect().top - c.getBoundingClientRect().top - 12;
+    if (room > 0) c.scrollTop += room;
+  }
+
   function appendMessage(m, animate) {
     const box = $('#messages');
     const stick = nearBottom() || m.speaker === 'user';
@@ -358,11 +369,20 @@
     if (animate) node.classList.add('enter');
     box.append(node);
     updateWelcome();
-    if (stick) requestAnimationFrame(toBottom);
+    let first = null;
+    if (burst && animate) {
+      if (m.speaker === 'user') burst.first = null; // 主持人插话了：后面到的回复重新算
+      else if (stick) {
+        first = burst.first;
+        if (!first) burst.first = node;
+      }
+    }
+    if (stick) requestAnimationFrame(first ? () => followBurst(first) : toBottom);
   }
 
   function renderMessages() {
     $('#messages').replaceChildren();
+    if (burst) burst.first = null;
     state.lastTs = 0;
     for (const m of state.messages) appendMessage(m, false);
     updateWelcome();
@@ -375,35 +395,54 @@
     $('#setup-tip').classList.toggle('hidden', !needSetup);
   }
 
+  function setTyping(v) {
+    const list = Array.isArray(v) ? v : v ? [v] : [];
+    if (list.length > 1 && !burst) burst = { first: null };
+    if (!list.length) burst = null;
+    state.typing = list;
+  }
+
+  // “正在输入”的提示：每位正在发言的成员一行
   function renderTyping() {
     const box = $('#typing');
     clearInterval(typingTimer);
-    if (!state.typing) {
+    const list = state.typing;
+    // 有新的成员开始发言时才跟到最下面；有人说完、提示变少时不动
+    const stick = list.some((t) => !shownTyping.has(t.speaker)) && nearBottom();
+    shownTyping = new Set(list.map((t) => t.speaker));
+    if (!list.length) {
       box.className = 'hidden';
       box.replaceChildren();
       return;
     }
-    const { speaker, startedAt } = state.typing;
-    const elapsed = el('span', { class: 'elapsed' });
-    box.className = `msg ai ${speaker}`;
+    const ticks = [];
+    box.className = '';
     box.replaceChildren(
-      avatar(speaker),
-      el('div', { class: 'body' }, el('div', { class: 'name' }, NAMES[speaker] || speaker), el('div', { class: 'bubble' }, el('span', { class: 'dots' }, el('i'), el('i'), el('i')), elapsed))
+      ...list.map(({ speaker, startedAt }) => {
+        const elapsed = el('span', { class: 'elapsed' });
+        ticks.push(() => {
+          const sec = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
+          elapsed.textContent = T(`正在输入… ${sec} 秒`, `typing... ${sec}s`);
+        });
+        return el(
+          'div',
+          { class: `msg ai ${speaker}` },
+          avatar(speaker),
+          el('div', { class: 'body' }, el('div', { class: 'name' }, NAMES[speaker] || speaker), el('div', { class: 'bubble' }, el('span', { class: 'dots' }, el('i'), el('i'), el('i')), elapsed))
+        );
+      })
     );
-    const tick = () => {
-      const sec = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
-      elapsed.textContent = T(`正在输入… ${sec} 秒`, `typing... ${sec}s`);
-    };
+    const tick = () => ticks.forEach((f) => f());
     tick();
     typingTimer = setInterval(tick, 1000);
-    if (nearBottom()) requestAnimationFrame(toBottom);
+    if (stick) requestAnimationFrame(toBottom);
   }
 
   function renderMembers() {
     const box = $('#members');
     box.replaceChildren(
       ...state.members.map((m) => {
-        const speaking = state.typing && state.typing.speaker === m.id;
+        const speaking = state.typing.some((t) => t.speaker === m.id);
         const limited = m.enabled && m.limited;
         const title = !m.enabled
           ? T(`${m.name}：已关闭`, `${m.name}: off`)
@@ -444,9 +483,14 @@
     $('#btn-continue').classList.toggle('hidden', state.busy);
     $('#btn-continue').disabled = !state.messages.some((m) => m.speaker === 'user');
     let hint = '';
-    if (state.busy) hint = state.queued
-        ? T(`后面还有 ${state.queued} 次发言在排队；这时发新消息会改变后面的安排`, `${state.queued} more ${state.queued === 1 ? 'reply is' : 'replies are'} queued; a new message now will change the plan`)
-        : T('最后一位正在发言', 'The last member is replying');
+    const together = state.typing.length;
+    if (state.busy) {
+      if (state.queued) {
+        hint = T(`后面还有 ${state.queued} 次发言在排队；这时发新消息会改变后面的安排`, `${state.queued} more ${state.queued === 1 ? 'reply is' : 'replies are'} queued; a new message now will change the plan`);
+      } else if (together > 1) {
+        hint = T(`${together} 位成员正在同时回答`, `${together} members are replying at the same time`);
+      } else hint = T('最后一位正在发言', 'The last member is replying');
+    }
     $('#queue-hint').textContent = hint;
   }
 
@@ -569,9 +613,9 @@
     );
     langSel.value = draft.lang || '';
     langSel.addEventListener('change', () => (draft.lang = langSel.value));
-    const rotate = el('input', { type: 'checkbox' });
-    rotate.checked = Boolean(draft.rotateFirst);
-    rotate.addEventListener('change', () => (draft.rotateFirst = rotate.checked));
+    const shuffle = el('input', { type: 'checkbox' });
+    shuffle.checked = Boolean(draft.shuffleOrder);
+    shuffle.addEventListener('change', () => (draft.shuffleOrder = shuffle.checked));
     const adv = el('input', { type: 'checkbox' });
     adv.checked = Boolean(prefs.get('advanced', false));
     adv.addEventListener('change', () => {
@@ -587,7 +631,15 @@
         field('语言 / Language', langSel),
         field(T('单次发言最长等多久（秒）', 'Max wait per reply (seconds)'), timeout, T('有的模型想得比较久；超过这个时间还没回复就放弃这次发言。', 'Some models think for a long time. A reply that takes longer than this is abandoned.')),
         field(T('代理地址（可选）', 'Proxy (optional)'), proxy, T('只有访问 GitHub / Google 接口需要代理时才填，也会传给三个命令行工具。', 'Only needed if you reach the GitHub / Google APIs through a proxy. It is also passed to the three command-line tools.')),
-        el('label', { class: 'check' }, rotate, T('每次换一位成员先发言', 'Rotate who speaks first')),
+        el('label', { class: 'check' }, shuffle, T('自由讨论和辩论时，每条消息换一个发言顺序', 'In Open discussion and Debate, shuffle the speaking order on every message')),
+        el(
+          'span',
+          { class: 'field-help check-help' },
+          T(
+            '免得总是同一位先说、同一位压轴。关掉后按下面排的顺序发言。合作模式始终按下面的顺序；各自回答是大家同时回答，没有先后。',
+            'So the same member does not always open or close. When off, members speak in the order below. Collaborate always uses the order below; in Answer separately everyone answers at the same time.'
+          )
+        ),
         el('label', { class: 'check' }, adv, T('显示高级选项', 'Show advanced options'))
       ),
       ...draft.order.map((id, idx) => memberCard(id, idx))
@@ -611,7 +663,7 @@
         'div',
         { class: 'card-head' },
         avatar(id),
-        el('div', { class: 'card-title' }, el('strong', null, info.name), el('span', { class: 'muted' }, `${info.maker} · ${T(`第 ${idx + 1} 个发言`, `speaks #${idx + 1}`)}`)),
+        el('div', { class: 'card-title' }, el('strong', null, info.name), el('span', { class: 'muted' }, `${info.maker} · ${T(`排在第 ${idx + 1} 位`, `#${idx + 1} in the order`)}`)),
         el(
           'div',
           { class: 'card-tools' },
@@ -1009,7 +1061,7 @@
     state.lengths = s.lengths || state.lengths;
     state.busy = s.state.busy;
     state.queued = s.state.queued;
-    state.typing = s.state.typing;
+    setTyping(s.state.typing);
     if (!optionsFilled) {
       fillOptions();
       optionsFilled = true;
@@ -1033,16 +1085,17 @@
       if (m.alert === 'limit') alarm(m);
     });
     es.addEventListener('typing', (e) => {
-      state.typing = JSON.parse(e.data);
+      setTyping(JSON.parse(e.data));
       renderTyping();
       renderMembers();
+      updateButtons();
     });
     es.addEventListener('state', (e) => {
       const s = JSON.parse(e.data);
       state.busy = s.busy;
       state.queued = s.queued;
       const before = JSON.stringify(state.typing);
-      state.typing = s.typing;
+      setTyping(s.typing);
       if (before !== JSON.stringify(state.typing)) {
         renderTyping();
         renderMembers();

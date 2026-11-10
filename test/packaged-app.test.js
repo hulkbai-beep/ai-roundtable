@@ -92,13 +92,12 @@ test('桌面版里跑一轮完整的群聊（模拟的 AI）', async () => {
   try {
     const s = await sendAndWait(c, { text: '桌面版测试："引号"和换行\n第二行', rounds: 1 }, 60000);
     const ai = aiMessages(s);
-    assert.deepStrictEqual(
-      ai.map((m) => m.speaker),
-      ['claude', 'gemini', 'gpt']
-    );
-    assert.ok(ai[0].text.startsWith('MOCK-CLAUDE'), ai[0].text);
-    assert.ok(ai[1].text.startsWith('MOCK-AGY'), ai[1].text);
-    assert.ok(ai[2].text.startsWith('MOCK-CODEX'), ai[2].text);
+    // 默认每条消息换一个发言顺序，所以只看三位是不是都说了，不看先后
+    assert.deepStrictEqual(ai.map((m) => m.speaker).sort(), ['claude', 'gemini', 'gpt']);
+    const textOf = (who) => ai.find((m) => m.speaker === who).text;
+    assert.ok(textOf('claude').startsWith('MOCK-CLAUDE'), textOf('claude'));
+    assert.ok(textOf('gemini').startsWith('MOCK-AGY'), textOf('gemini'));
+    assert.ok(textOf('gpt').startsWith('MOCK-CODEX'), textOf('gpt'));
   } finally {
     kill(app);
     await sleep(1000);
