@@ -30,8 +30,18 @@ if (limit === 'resets') {
   // 不说什么时候恢复
   fail(['error: Your AI credits balance is too low to continue.', agyError({ short_error: 'RESOURCE_EXHAUSTED (code 429): Resource has been exhausted (e.g. check quota).', status: 'RESOURCE_EXHAUSTED', error_code: 429 })]);
 }
-// 服务器暂时繁忙：不是额度用完
-if (process.env.MOCK_AGY_FAIL) {
+// 和额度无关的失败
+const failure = process.env.MOCK_AGY_FAIL;
+if (failure === 'large') {
+  // 消息太大：gRPC 也用 RESOURCE_EXHAUSTED 报这个
+  const said = 'RESOURCE_EXHAUSTED (code 8): grpc: received message larger than max (5351648 vs. 4194304)';
+  fail([`error: ${said}`, agyError({ short_error: said, status: 'RESOURCE_EXHAUSTED', error_code: 8, retryable: false })]);
+} else if (failure === 'capacity') {
+  // 服务器上这个模型暂时没有容量：也是 429 / RESOURCE_EXHAUSTED，但不是这个账号的额度
+  const said = 'RESOURCE_EXHAUSTED (code 429): No capacity available for model gemini-3.1-pro-preview on the server';
+  fail([`error: ${said}`, agyError({ short_error: said, status: 'RESOURCE_EXHAUSTED', error_code: 429 })]);
+} else if (failure) {
+  // 服务器暂时繁忙
   fail(['error: The model is overloaded. Please try again later.', agyError({ short_error: 'UNAVAILABLE (code 503): The model is overloaded. Please try again later.', status: 'UNAVAILABLE', error_code: 503 })]);
 }
 

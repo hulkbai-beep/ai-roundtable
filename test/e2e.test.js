@@ -193,6 +193,11 @@ test('用量：Claude Code 内部多次调用的合计、Codex 在别的语言�
   // 德语系统上 codex 把 1234 写成 1.234
   s = await withEnv({ MOCK_CODEX_LOCALE: 'de' }, () => sendAndWait(c, { text: '@GPT 你好' }));
   assert.strictEqual(aiMessages(s).pop().meta.tokens, 1234);
+  // 回复的最后一行正好是 “tokens used”：真正的那两行在它后面，照样读得出来
+  s = await withEnv({ MOCK_CODEX_REPLY: 'footer' }, () => sendAndWait(c, { text: '@GPT 你好' }));
+  const footer = aiMessages(s).pop();
+  assert.ok(footer.text.endsWith('tokens used'), footer.text);
+  assert.deepStrictEqual([footer.meta.tokens, footer.meta.tokensEstimated], [1234, false]);
 
   await c.post('/api/config', {
     members: { gpt: { provider: 'github-models' }, gemini: { provider: 'gemini-api', 'gemini-api': { apiKey: 'good-key', baseUrl: `http://127.0.0.1:${api.port}` } } },
@@ -232,6 +237,9 @@ test('额度用完：提醒、标出来，其他成员继续；点名会再试�
     assert.ok(near(lim.resetAt, Date.now() + 125 * 60000, 2 * 60000), `读出恢复的钟点：${lim.resetAt}`);
     assert.ok(lim.retryAt > lim.resetAt && lim.retryAt <= lim.resetAt + 60000, '到点后稍等一下再试');
     assert.ok(alerts[0].text.includes('You’ve hit your usage limit'), '提醒里带上工具的原话');
+    // 「用量」里显示的也是工具的原话。codex 会把提示词回显出来，聊天内容不能混进去（它还会存进 usage.json）
+    assert.ok(lim.message.includes('You’ve hit your usage limit') && lim.message.includes('try again at'), lim.message);
+    assert.ok(!lim.message.includes('两轮讨论') && !lim.message.includes('【'), lim.message);
 
     // 继续聊：直接跳过 GPT（刚提醒过，不再重复说明）
     const before = s.messages.length;
@@ -358,17 +366,50 @@ test('和额度无关的失败不会被当成额度用完，哪怕大家正好�
   assert.ok(plan.level === 'error' && !plan.alert && plan.text.includes('不包含 Codex') && plan.text.includes('GitHub Models'), plan.text);
   assert.strictEqual(s.members.find((x) => x.id === 'gpt').limited, null);
 
-  // 接口用 429 报“这一次请求太大”：也不是额度用完
-  await c.post('/api/config', { members: { gpt: { provider: 'github-models' } } });
-  api.setMode('429-large');
-  try {
-    s = await sendAndWait(c, { text: '@GPT 你好' });
+  // Codex：磁盘配额满了（操作系统的报错里也有 quota）、服务器回 429 但原因是这一次请求太大
+  for (const variant of ['disk', 'large']) {
+    s = await withEnv({ MOCK_CODEX_FAIL: variant }, () => sendAndWait(c, { text: '@GPT 你好' }));
     const last = s.messages[s.messages.length - 1];
-    assert.ok(last.level === 'error' && !last.alert && last.text.includes('聊天记录太长'), last.text);
-    assert.strictEqual(s.members.find((x) => x.id === 'gpt').limited, null);
+    assert.ok(last.level === 'error' && !last.alert && last.text.includes('GPT 发言失败'), `${variant}: ${last.text}`);
+    assert.ok(!last.text.includes('额度暂时用完了'), `${variant}: ${last.text}`);
+    assert.strictEqual(s.members.find((x) => x.id === 'gpt').limited, null, variant);
+  }
+  // agy：消息太大、服务器上这个模型没有容量。状态也是 RESOURCE_EXHAUSTED，但不是这个账号的额度
+  for (const variant of ['large', 'capacity']) {
+    s = await withEnv({ MOCK_AGY_FAIL: variant }, () => sendAndWait(c, { text: '@Gemini 你好' }));
+    const last = s.messages[s.messages.length - 1];
+    assert.ok(last.level === 'error' && !last.alert && last.text.includes('Gemini 发言失败'), `${variant}: ${last.text}`);
+    assert.ok(!last.text.includes('额度暂时用完了'), `${variant}: ${last.text}`);
+    assert.strictEqual(s.members.find((x) => x.id === 'gemini').limited, null, variant);
+  }
+
+  // 接口用 429 报“这一次请求太大”：也不是额度用完。报错很长（模型名字长）时也一样
+  await c.post('/api/config', { members: { gpt: { provider: 'github-models' } } });
+  try {
+    for (const mode of ['429-large', '429-large-long']) {
+      api.setMode(mode);
+      s = await sendAndWait(c, { text: '@GPT 你好' });
+      const last = s.messages[s.messages.length - 1];
+      assert.ok(last.level === 'error' && !last.alert && last.text.includes('聊天记录太长'), `${mode}: ${last.text}`);
+      assert.strictEqual(s.members.find((x) => x.id === 'gpt').limited, null, mode);
+    }
   } finally {
     api.setMode('ok');
     await c.post('/api/config', { members: { gpt: { provider: 'codex-cli' } } });
+  }
+});
+
+test('Codex 失败又没说原因时，不从它开头那段信息里猜原因', async () => {
+  // 开头那段信息里有 “reasoning effort: …” 和 session id：选了思考强度时，以前会被当成“模型不支持这个思考强度”
+  await c.post('/api/config', { members: { gpt: { 'codex-cli': { effort: 'low' } } } });
+  try {
+    await c.post('/api/new');
+    const s = await withEnv({ MOCK_CODEX_FAIL: 'empty' }, () => sendAndWait(c, { text: '@GPT 你好' }));
+    const last = s.messages[s.messages.length - 1];
+    assert.ok(last.level === 'error' && last.text.includes('Codex 没有返回内容'), last.text);
+    assert.ok(last.text.includes('codex exec') && !last.text.includes('思考强度') && !last.text.includes('登录'), last.text);
+  } finally {
+    await c.post('/api/config', { members: { gpt: { 'codex-cli': { effort: '' } } } });
   }
 });
 
@@ -461,6 +502,96 @@ test('额度用完：协作模式里负责总结的人用完了，改由最后�
   } finally {
     await c.post('/api/usage/retry', { member: 'gpt' });
   }
+});
+
+test('额度用完：负责总结的人正好在总结那一次用完了，请刚发过言的最后一位补一次总结', async () => {
+  await c.post('/api/new');
+  // 每人只说一轮：Claude、Gemini、GPT（总结）。GPT 一开口就发现额度用完了，这时队列里已经没有别人
+  process.env.MOCK_CODEX_LIMIT = '1';
+  try {
+    let s = await sendAndWait(c, { text: '一起写个方案', mode: 'collab', rounds: 1 });
+    const ai = aiMessages(s);
+    assert.deepStrictEqual(ai.map((x) => x.speaker), ['claude', 'gemini', 'gemini']);
+    assert.strictEqual(parseInfo(ai[1].text, 'MOCK-AGY').final, undefined);
+    assert.strictEqual(parseInfo(ai[2].text, 'MOCK-AGY').final, true, 'Gemini 补一次总结');
+    assert.strictEqual(s.messages.filter((x) => x.alert === 'limit').length, 1);
+    // 只点了 GPT 一个人的名：这一轮没有别人发过言，不会拉别人来说
+    const before = s.messages.length;
+    s = await sendAndWait(c, { text: '@GPT 你来总结', mode: 'collab' });
+    assert.deepStrictEqual(aiMessages({ messages: s.messages.slice(before) }), []);
+  } finally {
+    delete process.env.MOCK_CODEX_LIMIT;
+    await c.post('/api/usage/retry', { member: 'gpt' });
+  }
+});
+
+test('额度用完：每种接入方式各记各的，换一种又被限了也不会盖掉原来那种的标记', async () => {
+  await c.post('/api/new');
+  await withEnv({ MOCK_CODEX_LIMIT: '1' }, () => sendAndWait(c, { text: '@GPT 你好' }));
+  assert.strictEqual((await limitedOf('gpt')).provider, 'codex-cli');
+  await c.post('/api/config', { members: { gpt: { provider: 'github-models' } } });
+  try {
+    api.setMode('429-bare');
+    await sendAndWait(c, { text: '@GPT 换一种接入方式' });
+    assert.strictEqual((await limitedOf('gpt')).provider, 'github-models');
+    // “再试一次”清掉的是现在用的这种
+    await c.post('/api/usage/retry', { member: 'gpt' });
+    assert.strictEqual(await limitedOf('gpt'), null);
+  } finally {
+    api.setMode('ok');
+    await c.post('/api/config', { members: { gpt: { provider: 'codex-cli' } } });
+  }
+  try {
+    // 换回 Codex：它的标记还在，恢复时间也还是原来那个
+    const lim = await limitedOf('gpt');
+    assert.ok(lim && lim.provider === 'codex-cli' && near(lim.resetAt, Date.now() + 125 * 60000, 3 * 60000), JSON.stringify(lim));
+  } finally {
+    await c.post('/api/usage/retry', { member: 'gpt' });
+  }
+  assert.strictEqual(await limitedOf('gpt'), null);
+});
+
+test('额度用完：发言期间改了这种接入方式的设置，旧设置的“额度用完”不记到新设置头上', async () => {
+  await c.post('/api/new');
+  process.env.MOCK_CLAUDE_LIMIT = '1';
+  process.env.MOCK_DELAY = '1500';
+  try {
+    // Claude 正在用旧设置发言（要一秒半才出结果），这时用户改了模型
+    assert.strictEqual((await c.post('/api/send', { text: '@Claude 你好' })).status, 200);
+    await sleep(100);
+    await c.post('/api/config', { members: { claude: { 'claude-cli': { model: 'opus' } } } });
+    const s = await waitIdle(c);
+    const last = s.messages[s.messages.length - 1];
+    assert.ok(last.level === 'error' && !last.alert && last.text.includes('Claude 发言失败'), last.text);
+    assert.strictEqual(s.members.find((x) => x.id === 'claude').limited, null, '新设置还没试过，不能直接跳过');
+    // 连接测试也一样
+    const pending = c.post('/api/test/claude');
+    await sleep(100);
+    await c.post('/api/config', { members: { claude: { 'claude-cli': { model: 'sonnet' } } } });
+    const t = (await pending).json;
+    assert.ok(!t.ok && !t.limited, JSON.stringify(t));
+    assert.strictEqual(await limitedOf('claude'), null);
+    // 设置没动时照常标记
+    const again = (await c.post('/api/test/claude')).json;
+    assert.ok(!again.ok && again.limited);
+    assert.strictEqual((await limitedOf('claude')).provider, 'claude-cli');
+  } finally {
+    delete process.env.MOCK_CLAUDE_LIMIT;
+    delete process.env.MOCK_DELAY;
+    await c.post('/api/config', { members: { claude: { 'claude-cli': { model: '' } } } });
+    await c.post('/api/usage/retry', { member: 'claude' });
+  }
+});
+
+test('请求内容必须是一个对象：null、数组、数字都回 400，不会让服务出错', async () => {
+  const before = (await c.get('/api/config')).json.config;
+  for (const p of ['/api/send', '/api/continue', '/api/config', '/api/usage/retry', '/api/usage/reset', '/api/history/open', '/api/test/claude']) {
+    for (const body of [null, [], 5, 'x']) {
+      const r = await c.post(p, body);
+      assert.strictEqual(r.status, 400, `${p} ${JSON.stringify(body)}: ${r.status} ${r.text}`);
+    }
+  }
+  assert.deepStrictEqual((await c.get('/api/config')).json.config, before);
 });
 
 test('模型和思考强度：传给命令行和接口，回复上标出来；不支持时自动忽略', async () => {

@@ -55,13 +55,23 @@ process.stdin.on('end', () => {
     return;
   }
   const failure = process.env.MOCK_CODEX_FAIL;
+  if (failure === 'empty') {
+    // 没有报错、也没有回复：退出码是 0，-o 的文件是空的
+    err(`Warning: no last agent message; wrote empty content to ${o >= 0 ? args[o + 1] : 'output'}`);
+    return;
+  }
   if (failure) {
-    // 和额度无关的失败：断网；MOCK_CODEX_FAIL=plan 是这个账号的套餐不含 Codex
-    err(
-      failure === 'plan'
-        ? 'ERROR: To use Codex with your ChatGPT plan, upgrade to Plus: https://chatgpt.com/explore/plus.'
-        : 'ERROR: stream disconnected before completion: error sending request for url (https://chatgpt.com/backend-api/codex/responses)'
-    );
+    // 和额度无关的失败。默认是断网；其他几种：
+    const errors = {
+      // 这个账号的套餐不含 Codex
+      plan: 'ERROR: To use Codex with your ChatGPT plan, upgrade to Plus: https://chatgpt.com/explore/plus.',
+      // 磁盘配额满了（Rust 报操作系统错误的写法）
+      disk: 'ERROR: Disk quota exceeded (os error 122)',
+      // 服务器回 429，原因是这一次请求本身太大（codex 把状态和返回内容原样报出来）
+      large:
+        'ERROR: unexpected status 429 Too Many Requests: {"error":{"message":"Request too large for gpt-mock in organization org-mock on tokens per min (TPM): Limit 30000, Requested 44000. The input or output tokens must be reduced in order to run successfully.","type":"tokens","code":"rate_limit_exceeded"}}, url: https://api.openai.com/v1/responses',
+    };
+    err(errors[failure] || 'ERROR: stream disconnected before completion: error sending request for url (https://chatgpt.com/backend-api/codex/responses)');
     process.exitCode = 1;
     return;
   }
@@ -75,7 +85,8 @@ process.stdin.on('end', () => {
     model: args.includes('-m') ? args[args.indexOf('-m') + 1] : undefined,
     config: args.includes('-c') ? args[args.indexOf('-c') + 1] : undefined,
   };
-  const text = input.includes('请只回复两个字') ? '在线' : `MOCK-CODEX ${JSON.stringify(info)}`;
+  // MOCK_CODEX_REPLY=footer：回复的最后一行正好是 “tokens used”（后面紧跟着真正的那两行）
+  const text = input.includes('请只回复两个字') ? '在线' : process.env.MOCK_CODEX_REPLY === 'footer' ? 'MOCK-CODEX 输出的最后两行是：\ntokens used' : `MOCK-CODEX ${JSON.stringify(info)}`;
   err(`codex\n${text}`);
   if (o >= 0) fs.writeFileSync(args[o + 1], text);
   // MOCK_CODEX_LOCALE=de 模拟德语系统上的写法（1.234）

@@ -35,6 +35,17 @@ function startMockApi() {
         if (mode === '429-large') {
           return send(429, { error: { message: 'Request too large for gpt-4.1 in organization org-mock on tokens per min (TPM): Limit 30000, Requested 44000.', type: 'tokens', code: 'rate_limit_exceeded' } });
         }
+        // 同样是请求太大，但模型名字很长，整句话超过 300 个字
+        if (mode === '429-large-long') {
+          return send(429, {
+            error: {
+              message:
+                'Request too large for ft:gpt-4.1-mini-2025-04-14:acme-corp:support-bot-v2:AbCd1234 in organization org-AbCdEfGhIjKlMnOpQrStUvWx on tokens per min (TPM): Limit 30000, Requested 44000. The input or output tokens must be reduced in order to run successfully. Visit https://platform.openai.com/account/rate-limits to learn more.',
+              type: 'tokens',
+              code: 'rate_limit_exceeded',
+            },
+          });
+        }
         // 只说请求太多，没说等多久（本地模型排队时就是这样）
         if (mode === '429-bare') return send(429, { error: { message: 'server busy, please try again.' } });
         // 模拟非推理模型不认 reasoning_effort

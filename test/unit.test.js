@@ -243,9 +243,20 @@ const NOT_LIMIT_MESSAGES = [
   'To use Codex with your ChatGPT plan, upgrade to Plus: https://chatgpt.com/explore/plus.',
   'exceeded retry limit, last status: 503 Service Unavailable, request id: req_0123',
   'unexpected status 500 Internal Server Error: {"detail":"oops"}, url: https://chatgpt.com/backend-api/codex/responses',
-  // 其他
+  // 只有状态码（RESOURCE_EXHAUSTED、429），原因是别的事：消息太大（gRPC）、服务器上这个模型没有容量
+  // （gemini-cli 的 googleQuotaErrors.test.ts）、这一次请求太大（OpenAI 的 429，Codex 会把状态和返回内容原样报出来）
   'UNAVAILABLE (code 503): The model is overloaded. Please try again later.',
   'RESOURCE_EXHAUSTED: grpc: received message larger than max (5000000 vs. 4194304)',
+  'RESOURCE_EXHAUSTED: gRPC message exceeds maximum size 4194304: 5000000',
+  'RESOURCE_EXHAUSTED (code 429): No capacity available for model gemini-3.1-pro-preview on the server',
+  'unexpected status 429 Too Many Requests: {"error":{"message":"Request too large for gpt-5 in organization org-abc on tokens per min (TPM): Limit 30000, Requested 44000. The input or output tokens must be reduced in order to run successfully.","type":"tokens","code":"rate_limit_exceeded"}}, url: https://api.openai.com/v1/responses',
+  // 操作系统自己的“配额”报错：磁盘配额（Linux / macOS）、Windows 的内存配额。和账号的额度无关
+  'Disk quota exceeded (os error 122)',
+  'Error: EDQUOT: disk quota exceeded, write',
+  'Insufficient quota to complete the requested service. (os error 1453)',
+  '[WinError 1453] Insufficient quota to complete the requested service',
+  'Not enough quota is available to process this command. (os error 1816)',
+  // 其他
   'warning: run ended with no output and no recorded error',
   'Error: ENOENT',
   'The usage of this function is limited',
@@ -280,6 +291,34 @@ test('额度用完：认得出各家真实的报错，不把别的错误当成�
   assert.deepStrictEqual(detectLimit('You’ve hit your usage limit. Try again later.', 0), { resetAt: null });
   assert.strictEqual(detectLimit(''), null);
   assert.strictEqual(detectLimit(null), null);
+  // 操作系统的报错只去掉它自己那一行，别的行照常判断
+  assert.ok(detectLimit('ERROR: Disk quota exceeded (os error 122)\nERROR: You’ve hit your usage limit. Try again later.'));
+  // 请求太频繁的说法本身就算；只有 429 这个状态码、原因是请求太大时才不算
+  assert.ok(detectLimit('Rate limit reached for gpt-4o in organization org-abc on tokens per min (TPM): Limit 30000, Used 29000, Requested 2000. Please try again in 2s.'));
+});
+
+test('额度用完：很长的输出也很快判断完（关键词后面跟着一大片空白时不能反复回溯）', () => {
+  const { detectLimit, parseResetAt, limitReply } = require('../lib/limits');
+  const big = 50000;
+  const inputs = [
+    `usage limit reached. resets${' '.repeat(big)}x`,
+    `usage limit reached. retry${' '.repeat(big)}x`,
+    `usage limit reached. back${'\t'.repeat(big)}x`,
+    `usage limit reached. resets${'\n'.repeat(big)}x`,
+    `usage limit reached. try again at${' '.repeat(big)}x`,
+    `usage limit reached. please wait${' '.repeat(big)}x`,
+    `usage limit reached. ${'resets '.repeat(big / 7)}`,
+    `usage limit reached. ${'retry in 1s '.repeat(big / 12)}`,
+    `${'You have hit your '.repeat(big / 18)}limit`,
+  ];
+  const t0 = Date.now();
+  for (const text of inputs) {
+    detectLimit(text);
+    parseResetAt(text);
+    limitReply(text);
+  }
+  // 修好之前，头几条每条都要好几秒
+  assert.ok(Date.now() - t0 < 2000, `用了 ${Date.now() - t0} 毫秒`);
 });
 
 test('额度用完：读出恢复时间（钟点、带时区的钟点、日期、时长）', () => {
@@ -287,12 +326,12 @@ test('额度用完：读出恢复时间（钟点、带时区的钟点、日期�
   const now = Date.UTC(2026, 10, 10, 10, 0, 0); // 2026-11-10 10:00 UTC，星期二
   const at = (text, t = now) => parseResetAt(text, t);
   const iso = (ts) => (ts == null ? null : new Date(ts).toISOString().slice(0, 16));
-  // 本机时区的下一个 h:mi（刚过去十分钟以内算“刚恢复”）
+  // 本机时区的下一个 h:mi（刚过去十分钟以内算“刚恢复”：一秒后就能再试）
   const nextLocal = (h, mi, t = now) => {
     const d = new Date(t);
     d.setHours(h, mi, 0, 0);
     if (d.getTime() < t - 10 * 60000) d.setDate(d.getDate() + 1);
-    return d.getTime();
+    return Math.max(d.getTime(), t + 1000);
   };
 
   // 没写时区：按本机时区
@@ -321,6 +360,10 @@ test('额度用完：读出恢复时间（钟点、带时区的钟点、日期�
   assert.strictEqual(iso(at("You've hit your limit · resets 3pm (America/New_York)", Date.UTC(2026, 6, 1, 12, 0))), '2026-07-01T19:00', '夏令时');
   assert.strictEqual(iso(at("You've hit your weekly limit · resets Mon 12:00am (Asia/Tokyo)")), '2026-11-15T15:00');
   assert.strictEqual(iso(at('…or try again after it resets on December 1 at 00:00 UTC.')), '2026-12-01T00:00');
+  // 24 小时制后面直接写 UTC / GMT（没有 am/pm、没有括号）
+  assert.strictEqual(iso(at('spend limit reached · resets at 15:00 UTC')), '2026-11-10T15:00');
+  assert.strictEqual(iso(at('spend limit reached · resets 15:00 GMT')), '2026-11-10T15:00');
+  assert.strictEqual(iso(at('spend limit reached · resets 3:00pm UTC')), '2026-11-10T15:00');
   assert.strictEqual(iso(at('spend limit reached (daily; resets 2026-11-11 00:00 UTC)')), '2026-11-11T00:00');
   assert.strictEqual(iso(at('spend limit reached · resets Dec 1')), '2026-12-01T00:00', '只有日期：那天 UTC 0 点');
 
@@ -337,9 +380,31 @@ test('额度用完：读出恢复时间（钟点、带时区的钟点、日期�
   assert.strictEqual(at('Please retry in 0s.'), now + 1000, '已经到点：马上再试');
   assert.strictEqual(at('Claude AI usage limit reached|1762800000', 1762790000000), 1762800000 * 1000);
 
+  // 夏令时结束那天（纽约 2026-11-01），凌晨 1 点到 2 点会出现两次。现在是第一次的 1:50
+  const fallBack = Date.UTC(2026, 10, 1, 5, 50);
+  assert.strictEqual(iso(at("You've hit your session limit · resets 1:30am (America/New_York)", fallBack)), '2026-11-01T06:30', '前一次 1:30 已经过去，说的是后一次（不是明天）');
+  assert.strictEqual(iso(at("You've hit your session limit · resets 1:55am (America/New_York)", fallBack)), '2026-11-01T05:55', '前一次还没到');
+  assert.strictEqual(iso(at("You've hit your session limit · resets 3:30am (America/New_York)", fallBack)), '2026-11-01T08:30');
+  assert.strictEqual(iso(at("You've hit your session limit · resets 1:30am (America/New_York)", Date.UTC(2026, 10, 2, 5, 50))), '2026-11-02T06:30', '平常的日子不受影响');
+
   // 读不出来，或者离谱的时间：当成不知道
-  for (const text of ['try again later', 'Retry 3 times', 'resets monthly at 3pm', 'resets soon', 'resets Feb 30 at 5pm', 'resets 25:00', 'resets Mar 3 at 5pm', 'Resets in 9000h.', '']) {
+  for (const text of ['try again later', 'Retry 3 times', 'resets monthly at 3pm', 'resets soon', 'resets Feb 30 at 5pm', 'resets 25:00', 'resets Mar 3 at 5pm', 'Resets in 9000h.', 'presets 3pm', 'fallback 10:30', '']) {
     assert.strictEqual(at(text), null, text);
+  }
+});
+
+test('额度用完：机器在别的时区时，时间也读得对（把这个文件放到别的时区里再跑一遍）', { skip: Boolean(process.env.RT_OTHER_ZONE) }, (t) => {
+  const { spawnSync } = require('child_process');
+  // 一个在 UTC 东边、没有夏令时；一个在西边、有夏令时。1 月 1 日这两个时区和 UTC 差的分钟数：
+  for (const [zone, offset] of [['Asia/Shanghai', -480], ['America/Los_Angeles', 480]]) {
+    const env = { ...process.env, TZ: zone, RT_OTHER_ZONE: '1' };
+    const probe = spawnSync(process.execPath, ['-e', 'process.stdout.write(String(new Date(Date.UTC(2026, 0, 1)).getTimezoneOffset()))'], { env, encoding: 'utf8' });
+    if (probe.stdout !== String(offset)) {
+      t.diagnostic(`这台机器上 TZ=${zone} 不起作用，跳过`);
+      continue;
+    }
+    const r = spawnSync(process.execPath, [__filename], { env, encoding: 'utf8', timeout: 120000 });
+    assert.strictEqual(r.status, 0, `TZ=${zone}：\n${r.stdout}\n${r.stderr}`);
   }
 });
 
@@ -363,6 +428,15 @@ test('额度用完：工具不报错、把那句话当成回复时也认得出�
     'You’ve hit your usage limit for GPT-5.5. Switch to another model now, or try again at 3:05 PM.',
     'Claude usage limit reached. Your limit will reset at 1pm (Etc/GMT+5).',
     'Individual quota reached. Contact your administrator to enable overages.',
+    "You've hit your limit · resets 3pm (America/Los_Angeles)",
+    "You've hit your Opus limit · resets 3:45pm",
+    "You've hit your team's shared budget · ask your admin to raise it at https://claude.ai/admin-settings/usage",
+    "You've hit your channel's monthly spend limit · an org owner or channel manager can raise it in the channel's Claude settings",
+    'You’ve hit your usage limit. Try again later.',
+    'You’ve hit your usage limit. To get more access now, send a request to your admin or try again later.',
+    'spend limit reached · resets Dec 1',
+    '5-hour limit reached ∙ resets 9pm',
+    "You're out of usage credits · resets 2:50pm (America/New_York)",
   ]) {
     assert.ok(limitReply(text), `应该认出来：${text}`);
   }
@@ -378,6 +452,19 @@ test('额度用完：工具不报错、把那句话当成回复时也认得出�
     'Rate limit reached is the error you get when you call the API too often.',
     "You're out of credits, I'm afraid, so the plan needs a cheaper option.",
     'Weekly limit reached — that is the banner Claude Code shows.',
+    // 很短、开头也像，但说的不是额度（有人问“今天第四杯咖啡了，再来一杯？”）
+    "You've reached your limit for today.",
+    "You've hit your limit.",
+    '"You have reached your limit."',
+    "You've reached your daily caffeine limit.",
+    "You've reached your word limit.",
+    'You have reached your budget.',
+    "You've hit your limit. Try again tomorrow.",
+    "You've reached your daily limit. Try again tomorrow.",
+    "You've hit your quota for bad puns.",
+    'Session limit reached. I would reset the router and try again.',
+    'Monthly limit reached. Upgrade your phone plan.',
+    "You're out of credits. Game over!",
     `You've hit your session limit · resets 3:45pm\n${'这是一条很长的正常回复。'.repeat(40)}`,
     'Usage limits are a common topic.\n\n1. Session limit\n2. Weekly limit\n3. Opus limit\n4. Spend limit',
     '在线',
@@ -447,9 +534,10 @@ test('用量记录：按 5 小时 / 24 小时 / 7 天统计，额度用完的标
   assert.strictEqual(u.summary('gpt').day.calls, 0);
 
   u.setLimited('gpt', { resetAt: Date.now() + 60000, provider: 'codex-cli', message: 'limit' });
-  assert.ok(u.isLimited('gpt'));
-  u.data.limits.gpt.retryAt = Date.now() - 1;
-  assert.ok(!u.isLimited('gpt'), '过了恢复时间就不再算额度用完');
+  assert.ok(u.isLimited('gpt', 'codex-cli'));
+  assert.ok(!u.isLimited('gpt', 'github-models'), '额度跟着接入方式走');
+  u.limit('gpt', 'codex-cli').retryAt = Date.now() - 1;
+  assert.ok(!u.isLimited('gpt', 'codex-cli'), '过了恢复时间就不再算额度用完');
   const l = u.setLimited('gemini', {});
   assert.strictEqual(l.resetAt, null);
   assert.ok(l.retryAt > Date.now() + 50 * 60000, '不知道恢复时间时，一小时后再试');
@@ -482,58 +570,84 @@ test('用量记录：到点后稍等再试；一试又用完就隔久一点；�
   assert.strictEqual(l.retryAt, l.resetAt + MIN);
   l = u.setLimited('claude', { resetAt: now + 20000, provider: 'claude-cli' });
   assert.ok(l.retryAt - l.resetAt >= 1000 && l.retryAt - l.resetAt <= 3000, '等待本来就短时，只多等一点点');
-  u.clearLimited('claude');
+  u.clearLimited('claude', 'claude-cli');
 
   // 只是请求太频繁：五分钟后再试
   l = u.setLimited('gpt', { resetAt: null, retryInMs: 5 * MIN, provider: 'github-models' });
   assert.ok(l.resetAt === null && near(l.retryAt, Date.now() + 5 * MIN));
-  u.clearLimited('gpt');
+  u.clearLimited('gpt', 'github-models');
 
   // 工具说“1 秒后再试”，到点一试又用完：它报的时间不准，改成 5 分钟、15 分钟、1 小时
-  const expire = (id) => {
-    u.data.limits[id].retryAt = Date.now() - 1;
-    assert.strictEqual(u.limit(id), null);
+  const expire = (id, provider) => {
+    u.limit(id, provider).retryAt = Date.now() - 1;
+    assert.strictEqual(u.limit(id, provider), null);
   };
   l = u.setLimited('gemini', { resetAt: Date.now() + 1500, provider: 'gemini-api' });
   assert.ok(l.resetAt && !l.strikes);
   for (const wait of [5 * MIN, 15 * MIN, 60 * MIN, 60 * MIN]) {
-    expire('gemini');
+    expire('gemini', 'gemini-api');
     l = u.setLimited('gemini', { resetAt: Date.now() + 1500, provider: 'gemini-api' });
     assert.ok(near(l.retryAt, Date.now() + wait), `应该等 ${wait / MIN} 分钟`);
     assert.strictEqual(l.resetAt, null, '报的时间不可信，界面上显示“恢复时间未知”');
   }
   // 工具给出的时间比这还晚：听它的
-  expire('gemini');
+  expire('gemini', 'gemini-api');
   now = Date.now();
   l = u.setLimited('gemini', { resetAt: now + 180 * MIN, provider: 'gemini-api' });
   assert.strictEqual(l.resetAt, now + 180 * MIN);
   // 换了接入方式，或者用户点了“再试一次”：重新算
-  expire('gemini');
+  expire('gemini', 'gemini-api');
   l = u.setLimited('gemini', { resetAt: Date.now() + 1500, provider: 'agy-cli' });
   assert.ok(l.resetAt && !l.strikes);
-  expire('gemini');
-  u.clearLimited('gemini');
+  expire('gemini', 'agy-cli');
+  u.clearLimited('gemini', 'agy-cli');
   l = u.setLimited('gemini', { resetAt: Date.now() + 1500, provider: 'agy-cli' });
   assert.ok(l.resetAt && !l.strikes);
+  u.clearLimited('gemini', 'agy-cli');
 
   // 成功了一次：去掉这种接入方式留下的标记；别的接入方式成功不算数
   u.setLimited('gpt', { resetAt: Date.now() + 60 * MIN, provider: 'codex-cli' });
   assert.strictEqual(u.succeeded('gpt', 'github-models'), false);
-  assert.ok(u.limit('gpt'), 'GitHub Models 能用，不代表 Codex 的额度恢复了');
+  assert.ok(u.limit('gpt', 'codex-cli'), 'GitHub Models 能用，不代表 Codex 的额度恢复了');
   assert.strictEqual(u.succeeded('gpt', 'codex-cli'), true);
-  assert.strictEqual(u.limit('gpt'), null);
+  assert.strictEqual(u.limit('gpt', 'codex-cli'), null);
   assert.strictEqual(u.succeeded('gpt', 'codex-cli'), false, '本来就没有标记');
   // 到点后一试成功了，过一会儿又用完：是新的一次，不算“一试又用完”
   u.setLimited('gpt', { resetAt: Date.now() + 1500, provider: 'codex-cli' });
-  expire('gpt');
+  expire('gpt', 'codex-cli');
   u.succeeded('gpt', 'github-models');
   l = u.setLimited('gpt', { resetAt: Date.now() + 1500, provider: 'codex-cli' });
   assert.strictEqual(l.strikes, 1, '别的接入方式成功不算数');
-  expire('gpt');
+  expire('gpt', 'codex-cli');
   assert.strictEqual(u.succeeded('gpt', 'codex-cli'), false, '标记已经到时间去掉了');
   l = u.setLimited('gpt', { resetAt: Date.now() + 1500, provider: 'codex-cli' });
   assert.ok(l.resetAt && !l.strikes);
+  u.clearLimited('gpt', 'codex-cli');
+
+  // 每种接入方式各记各的：Codex 用完后换成 GitHub Models，那边又被限了一次，Codex 的标记不能被盖掉
+  const codex = u.setLimited('gpt', { resetAt: Date.now() + 125 * MIN, provider: 'codex-cli' });
+  u.setLimited('gpt', { retryInMs: 5 * MIN, provider: 'github-models' });
+  assert.strictEqual(u.limit('gpt', 'codex-cli'), codex);
+  assert.ok(near(u.limit('gpt', 'github-models').retryAt, Date.now() + 5 * MIN));
+  assert.strictEqual(u.limit('gpt', 'openai-compatible'), null);
+  assert.deepStrictEqual(u.marksOf('gpt').map((x) => x.provider).sort(), ['codex-cli', 'github-models']);
+  // “再试一次”和成功只去掉那一种的
+  assert.strictEqual(u.clearLimited('gpt', 'github-models'), true);
+  assert.strictEqual(u.limit('gpt', 'codex-cli'), codex);
+  u.setLimited('gpt', { retryInMs: 5 * MIN, provider: 'github-models' });
   u.close();
+  // 重启后两个都还在
+  const reopened = new UsageStore(path.join(dir, 'usage.json'));
+  assert.deepStrictEqual(reopened.marksOf('gpt').map((x) => x.provider).sort(), ['codex-cli', 'github-models']);
+  assert.strictEqual(reopened.limit('gpt', 'codex-cli').resetAt, codex.resetAt);
+  reopened.close();
+  // 早先的文件一位成员只存一个标记（键就是成员 id）：照样读得出来，还是只对那种接入方式算数
+  const oldFile = path.join(dir, 'old.json');
+  fs.writeFileSync(oldFile, JSON.stringify({ version: 1, events: [], limits: { gpt: { since: 1, resetAt: null, retryAt: Date.now() + 60 * MIN, provider: 'codex-cli', message: 'x' } } }));
+  const old = new UsageStore(oldFile);
+  assert.ok(old.limit('gpt', 'codex-cli'));
+  assert.strictEqual(old.limit('gpt', 'github-models'), null);
+  old.close();
 
   // 文件被改坏了：能用的留下，其余的丢掉，不报错
   const bad = path.join(dir, 'bad.json');
