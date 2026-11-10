@@ -251,6 +251,26 @@ const NOT_LIMIT_MESSAGES = [
   'The usage of this function is limited',
 ];
 
+test('模拟的命令行工具各自只有一个文件：Windows 上的测试会把它单独复制到别处运行', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const { spawnSync } = require('child_process');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rt-mock-'));
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('MOCK_')));
+  for (const [name, args] of [
+    ['claude', ['-p', '--output-format', 'json']],
+    ['agy', ['-p', '你好']],
+    ['codex', ['exec', '-o', path.join(dir, 'codex-out.txt'), '-']],
+  ]) {
+    const file = path.join(dir, `${name}.js`);
+    fs.copyFileSync(path.join(__dirname, 'mocks', `${name}.js`), file);
+    const r = spawnSync(process.execPath, [file, ...args], { input: '你好', encoding: 'utf8', env, timeout: 20000 });
+    assert.strictEqual(r.status, 0, `${name}: ${r.stderr}`);
+    assert.ok(r.stdout.includes('MOCK-'), `${name}: ${r.stdout}`);
+  }
+});
+
 test('额度用完：认得出各家真实的报错，不把别的错误当成额度用完', () => {
   const { detectLimit, BRIEF_RETRY_MS } = require('../lib/limits');
   for (const text of LIMIT_MESSAGES) assert.ok(detectLimit(text), `应该认出来：${text}`);
