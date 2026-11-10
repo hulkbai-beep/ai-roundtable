@@ -134,6 +134,33 @@
     return `${d.getFullYear() === now.getFullYear() ? '' : `${d.getFullYear()}年`}${d.getMonth() + 1}月${d.getDate()}日 ${hm}`;
   }
 
+  // token 数写成 860 / 12.3k / 1.2M
+  function fmtTokens(n) {
+    const v = Number(n) || 0;
+    if (v < 1000) return String(v);
+    if (v < 1e6) return `${(v / 1000).toFixed(v < 1e4 ? 1 : 0)}k`;
+    return `${(v / 1e6).toFixed(1)}M`;
+  }
+
+  // 恢复时间：今天写 15:00，明天写“明天 15:00”
+  function fmtReset(ts) {
+    const d = new Date(ts);
+    const now = new Date();
+    const hm = d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
+    if (d.toDateString() === now.toDateString()) return hm;
+    const t = new Date(now);
+    t.setDate(now.getDate() + 1);
+    if (d.toDateString() === t.toDateString()) return T(`明天 ${hm}`, `tomorrow ${hm}`);
+    return LANG === 'en' ? `${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} ${hm}` : `${d.getMonth() + 1}月${d.getDate()}日 ${hm}`;
+  }
+
+  function limitText(l) {
+    if (!l) return '';
+    return l.resetAt
+      ? T(`预计 ${fmtReset(l.resetAt)} 恢复`, `expected back at ${fmtReset(l.resetAt)}`)
+      : T(`恢复时间未知，${fmtReset(l.retryAt)} 自动再试`, `reset time unknown; trying again at ${fmtReset(l.retryAt)}`);
+  }
+
   // ---------- Markdown（够用的精简版，先转义再排版，不会执行任何 HTML） ----------
 
   const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -291,12 +318,21 @@
   }
 
   function messageNode(m) {
-    if (m.speaker === 'system') return el('div', { class: `notice ${m.level || 'info'}` }, m.text);
+    if (m.speaker === 'system') {
+      if (m.alert !== 'limit') return el('div', { class: `notice ${m.level || 'info'}` }, m.text);
+      return el(
+        'div',
+        { class: `notice ${m.level || 'error'} limit-notice` },
+        m.text,
+        el('div', { class: 'notice-actions' }, el('button', { class: 'btn ghost sm', type: 'button', onclick: openUsage }, T('查看用量', 'View usage')))
+      );
+    }
     if (m.speaker === 'user') {
       return el('div', { class: 'msg user', 'data-id': m.id }, el('div', { class: 'body' }, el('div', { class: 'bubble', html: userHtml(m.text) })), avatar('user'));
     }
     const meta = m.meta || {};
-    const metaText = [meta.model, meta.effort, meta.ms ? T(`${(meta.ms / 1000).toFixed(1)} 秒`, `${(meta.ms / 1000).toFixed(1)}s`) : '', meta.note].filter(Boolean).join(' · ');
+    const tokens = meta.tokens ? `${meta.tokensEstimated ? '≈' : ''}${fmtTokens(meta.tokens)} tokens` : '';
+    const metaText = [meta.model, meta.effort, meta.ms ? T(`${(meta.ms / 1000).toFixed(1)} 秒`, `${(meta.ms / 1000).toFixed(1)}s`) : '', tokens, meta.note].filter(Boolean).join(' · ');
     const copyBtn = el('button', { class: 'copy', type: 'button', title: T('复制这条回复', 'Copy this reply') }, T('复制', 'Copy'));
     copyBtn.addEventListener('click', () => copyText(m.text, copyBtn));
     return el(
@@ -368,17 +404,37 @@
     box.replaceChildren(
       ...state.members.map((m) => {
         const speaking = state.typing && state.typing.speaker === m.id;
-        const title = !m.enabled ? T(`${m.name}：已关闭`, `${m.name}: off`) : `${m.name}${T('：', ': ')}${m.ready ? `${m.providerLabel}${m.model ? ` · ${m.model}` : ''}` : m.reason}`;
-        const cls = ['member', m.id, m.enabled ? '' : 'off', speaking ? 'speaking' : '', m.enabled && !m.ready ? 'warn' : ''].filter(Boolean).join(' ');
-        return el('span', { class: cls, title }, el('span', { class: 'dot' }), m.name);
+        const limited = m.enabled && m.limited;
+        const title = !m.enabled
+          ? T(`${m.name}：已关闭`, `${m.name}: off`)
+          : limited
+            ? `${m.name}${T('：额度用完了，', ': out of usage, ')}${limitText(m.limited)}`
+            : `${m.name}${T('：', ': ')}${m.ready ? `${m.providerLabel}${m.model ? ` · ${m.model}` : ''}` : m.reason}`;
+        const warn = m.enabled && !m.ready && !limited;
+        const cls = ['member', m.id, m.enabled ? '' : 'off', speaking ? 'speaking' : '', warn ? 'warn' : '', limited ? 'limited' : ''].filter(Boolean).join(' ');
+        const badge = limited ? T('额度用完', 'Out of usage') : warn ? T('需设置', 'Needs setup') : null;
+        return el('button', { class: cls, type: 'button', title, 'data-badge': badge, onclick: openUsage }, el('span', { class: 'dot' }), m.name);
       })
     );
     $('#mention-chips').replaceChildren(
       ...state.members
         .filter((m) => m.enabled)
-        .map((m) => el('button', { class: `chip ${m.id}`, type: 'button', title: T(`只让 ${m.name} 回答`, `Ask only ${m.name}`), onclick: () => insertMention(m.name) }, `@${m.name}`))
+        .map((m) =>
+          el(
+            'button',
+            {
+              class: `chip ${m.id}${m.limited ? ' limited' : ''}`,
+              type: 'button',
+              title: m.limited ? T(`${m.name} 额度用完了；点名会再试一次`, `${m.name} is out of usage; mentioning them tries again`) : T(`只让 ${m.name} 回答`, `Ask only ${m.name}`),
+              onclick: () => insertMention(m.name),
+            },
+            `@${m.name}`
+          )
+        )
     );
     updateWelcome();
+    renderLimitBanner();
+    if (!$('#usage-modal').classList.contains('hidden')) renderUsage();
   }
 
   function updateButtons() {
@@ -750,6 +806,151 @@
     }
   }
 
+  // ---------- 用量和额度 ----------
+
+  let bannerDismissed = '';
+  const limitedMembers = () => state.members.filter((m) => m.enabled && m.limited);
+
+  // 顶部的红色提醒：谁的额度用完了、什么时候恢复；点 × 收起，情况变了会再出来
+  function renderLimitBanner() {
+    const box = $('#limit-banner');
+    const out = limitedMembers();
+    const key = out.map((m) => `${m.id}:${m.limited.since}`).join(',');
+    if (!out.length || key === bannerDismissed) {
+      box.classList.add('hidden');
+      box.replaceChildren();
+      return;
+    }
+    const left = state.members.filter((m) => m.enabled && !m.limited).map((m) => m.name);
+    const who = out.map((m) => T(`${m.name} 额度用完了，${limitText(m.limited)}`, `${m.name} is out of usage, ${limitText(m.limited)}`)).join(T('；', '; '));
+    const rest = left.length ? T(`先由 ${left.join('、')} 继续聊。`, `${left.join(', ')} will carry on.`) : T('现在没有成员能发言。', 'No member can reply right now.');
+    const text = `⚠ ${who}${T('。', '. ')}${rest}`;
+    box.replaceChildren(
+      el('span', { class: 'lb-text' }, text),
+      el('button', { class: 'btn ghost sm', type: 'button', onclick: openUsage }, T('用量', 'Usage')),
+      el('button', { class: 'icon-btn sm', type: 'button', title: T('收起', 'Dismiss'), 'aria-label': T('收起', 'Dismiss'), onclick: () => {
+        bannerDismissed = key;
+        renderLimitBanner();
+      } }, '×')
+    );
+    box.classList.remove('hidden');
+  }
+
+  // 额度用完时响两声，窗口不在前台时再发一条系统通知
+  function alarm(m) {
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (Ctx) {
+        const ctx = new Ctx();
+        [0, 0.22].forEach((t, i) => {
+          const o = ctx.createOscillator();
+          const g = ctx.createGain();
+          o.frequency.value = i ? 660 : 880;
+          g.gain.setValueAtTime(0.0001, ctx.currentTime + t);
+          g.gain.exponentialRampToValueAtTime(0.15, ctx.currentTime + t + 0.02);
+          g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + t + 0.18);
+          o.connect(g).connect(ctx.destination);
+          o.start(ctx.currentTime + t);
+          o.stop(ctx.currentTime + t + 0.2);
+        });
+        setTimeout(() => ctx.close(), 800);
+      }
+    } catch {
+      /* 没有声音也没关系 */
+    }
+    try {
+      if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {
+        new Notification(appName(), { body: m.text.split('\n')[0] });
+      }
+    } catch {
+      /* 不支持通知就算了 */
+    }
+  }
+
+  function openUsage() {
+    renderUsage();
+    openModal('#usage-modal');
+  }
+
+  function renderUsage() {
+    const body = $('#usage-body');
+    const rows = [
+      ['h5', T('最近 5 小时', 'Last 5 hours')],
+      ['day', T('最近 24 小时', 'Last 24 hours')],
+      ['week', T('最近 7 天', 'Last 7 days')],
+    ];
+    const cards = state.members.map((m) => {
+      const u = m.usage || {};
+      const status = !m.enabled
+        ? el('span', { class: 'u-status off' }, T('已关闭', 'Off'))
+        : m.limited
+          ? el('span', { class: 'u-status bad' }, `${T('额度用完', 'Out of usage')} · ${limitText(m.limited)}`)
+          : el('span', { class: 'u-status ok' }, T('可以发言', 'Available'));
+      const table = el(
+        'table',
+        { class: 'usage-table' },
+        el('thead', null, el('tr', null, el('th', null, ''), el('th', null, T('合计', 'Total')), el('th', null, T('输入', 'Input')), el('th', null, T('输出', 'Output')), el('th', null, T('次数', 'Calls')))),
+        el(
+          'tbody',
+          null,
+          ...rows.map(([k, label]) => {
+            const w = u[k] || {};
+            const est = w.estimated ? '≈' : '';
+            return el(
+              'tr',
+              null,
+              el('th', null, label),
+              el('td', null, `${est}${fmtTokens(w.total)}`),
+              el('td', null, w.input ? `${est}${fmtTokens(w.input)}` : '–'),
+              el('td', null, w.output ? `${est}${fmtTokens(w.output)}` : '–'),
+              el('td', null, String(w.calls || 0))
+            );
+          })
+        )
+      );
+      const tools = el('div', { class: 'usage-tools' });
+      if (m.limited) {
+        tools.append(
+          el('button', { class: 'btn primary sm', type: 'button', title: T('去掉“额度用完”的标记，下次照常让它发言', 'Clear the out-of-usage mark so it speaks again next time'), onclick: () => usageAction('/api/usage/retry', { member: m.id }) }, T('再试一次', 'Try again'))
+        );
+      }
+      tools.append(
+        el('button', { class: 'btn ghost sm', type: 'button', onclick: () => {
+          if (confirm(T(`把 ${m.name} 的用量记录清零？`, `Reset ${m.name}'s usage counts?`))) usageAction('/api/usage/reset', { member: m.id });
+        } }, T('清零', 'Reset'))
+      );
+      return el(
+        'section',
+        { class: `card usage-card ${m.id}${m.limited ? ' limited' : ''}` },
+        el('div', { class: 'card-head' }, avatar(m.id), el('div', { class: 'card-title' }, el('strong', null, m.name), el('span', { class: 'muted' }, m.providerLabel)), status),
+        m.limited && m.limited.message ? el('div', { class: 'usage-msg' }, m.limited.message) : null,
+        table,
+        tools
+      );
+    });
+    body.replaceChildren(
+      ...cards,
+      el(
+        'p',
+        { class: 'field-help usage-note' },
+        T(
+          '订阅（Max、AI Pro、ChatGPT）的具体额度官方没有公开，这里只统计在 AI 圆桌里用了多少。“额度用完”是根据工具返回的报错判断的：到了恢复时间会自动回到群里；点名它或者在设置里点「保存并测试」也会再试一次。带 ≈ 的是按字数估算的（Antigravity CLI 不报告用量）。',
+          'Subscriptions (Max, AI Pro, ChatGPT) do not publish exact limits, so this only counts what AI Roundtable used. "Out of usage" comes from the error the tool returns: the member rejoins automatically at the reset time, and mentioning them or clicking "Save and test" in Settings tries again. Numbers with ≈ are estimated from text length (Antigravity CLI does not report usage).'
+        )
+      )
+    );
+  }
+
+  async function usageAction(path, body) {
+    try {
+      const r = await api(path, body);
+      state.members = r.members;
+      renderMembers();
+    } catch (e) {
+      showError(e);
+    }
+  }
+
   // ---------- 历史 ----------
 
   async function openHistory() {
@@ -829,6 +1030,7 @@
       state.messages.push(m);
       appendMessage(m, true);
       updateButtons();
+      if (m.alert === 'limit') alarm(m);
     });
     es.addEventListener('typing', (e) => {
       state.typing = JSON.parse(e.data);
@@ -884,6 +1086,7 @@
       window.location.href = '/api/export';
     });
     $('#btn-history').addEventListener('click', openHistory);
+    $('#btn-usage').addEventListener('click', openUsage);
     $('#btn-settings').addEventListener('click', openSettings);
     $('#btn-save-settings').addEventListener('click', async () => {
       try {

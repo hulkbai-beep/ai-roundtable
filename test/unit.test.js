@@ -154,3 +154,52 @@ test('小工具', () => {
   assert.strictEqual(maskSecret('github_pat_1234567890abcdef'), 'gith****cdef');
   assert.strictEqual(maskSecret('short'), '****');
 });
+
+test('额度用完：识别各家的报错，读出恢复时间', () => {
+  const { detectLimit, parseResetAt } = require('../lib/providers');
+  const now = new Date(2026, 10, 10, 10, 0, 0).getTime(); // 2026-11-10 10:00（本地时间）
+  assert.strictEqual(detectLimit('Claude AI usage limit reached|1762800000', now).resetAt, 1762800000 * 1000);
+  assert.strictEqual(detectLimit("You've hit your usage limit. Upgrade to Plus, or try again in 2 hours 5 minutes.", now).resetAt, now + (2 * 60 + 5) * 60000);
+  assert.strictEqual(detectLimit('RESOURCE_EXHAUSTED: Quota exceeded. Please retry in 37.5s.', now).resetAt, now + 37500);
+  assert.strictEqual(detectLimit("You've hit your limit · resets 3pm (America/Los_Angeles)", now).resetAt, new Date(2026, 10, 10, 15, 0).getTime());
+  assert.strictEqual(detectLimit('usage limit reached, try again at 9:30 AM', now).resetAt, new Date(2026, 10, 11, 9, 30).getTime(), '已经过了的时间算明天');
+  assert.strictEqual(detectLimit("You've reached your usage limit. Resets Nov 12, 2026 at 3:05 PM", now).resetAt, new Date(2026, 10, 12, 15, 5).getTime());
+  assert.deepStrictEqual(detectLimit('Error: insufficient_quota', now), { resetAt: null });
+  assert.strictEqual(detectLimit('Error: ENOENT', now), null);
+  assert.strictEqual(detectLimit('The usage of this function is limited', now), null);
+  assert.strictEqual(parseResetAt('try again later', now), null);
+});
+
+test('用量记录：按 5 小时 / 24 小时 / 7 天统计，额度用完的标记到时间自动清掉', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const { UsageStore, estimateTokens } = require('../lib/usage');
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'rt-usage-')), 'usage.json');
+  const u = new UsageStore(file);
+  u.record('claude', 'claude-cli', { input: 100, output: 50 });
+  u.record('claude', 'claude-cli', { total: 30, estimated: true });
+  u.data.events.push({ ts: Date.now() - 2 * 24 * 3600 * 1000, member: 'claude', input: 1, output: 1, total: 2 });
+  const s = u.summary('claude');
+  assert.deepStrictEqual(s.h5, { input: 100, output: 50, total: 180, calls: 2, estimated: true });
+  assert.strictEqual(s.week.total, 182);
+  assert.strictEqual(u.summary('gpt').day.calls, 0);
+
+  u.setLimited('gpt', { resetAt: Date.now() + 60000, provider: 'codex-cli', message: 'limit' });
+  assert.ok(u.isLimited('gpt'));
+  u.data.limits.gpt.retryAt = Date.now() - 1;
+  assert.ok(!u.isLimited('gpt'), '过了恢复时间就不再算额度用完');
+  const l = u.setLimited('gemini', {});
+  assert.strictEqual(l.resetAt, null);
+  assert.ok(l.retryAt > Date.now() + 50 * 60000, '不知道恢复时间时，一小时后再试');
+  u.close();
+  const again = new UsageStore(file);
+  assert.ok(again.isLimited('gemini'), '重启后还记得');
+  assert.strictEqual(again.summary('claude').week.calls, 3);
+  again.resetCounts('claude');
+  assert.strictEqual(again.summary('claude').week.calls, 0);
+  again.close();
+
+  assert.strictEqual(estimateTokens('你好世界'), 4);
+  assert.strictEqual(estimateTokens('abcdefgh'), 2);
+});
