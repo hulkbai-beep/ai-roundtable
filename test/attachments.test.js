@@ -608,6 +608,133 @@ test('PDF：没有文字的表单只看一遍，有文字的每次都算；页�
   assert.deepStrictEqual({ pages: pdfText(three, { maxPages: 2 }).pages, truncated: pdfText(three, { maxPages: 2 }).truncated }, { pages: 2, truncated: true });
 });
 
+test('PDF：页面树里共用的节点只走一遍；trailer 里的目录写错了也找得到页面', () => {
+  // 每一层的数组里直接写着两个节点，都指向下一层的同一个数组。60 层，不去重的话要走 2 的 60 次方遍
+  const objects = ['<< /Type /Catalog /Pages 2 0 R >>', '<< /Type /Pages /Kids 3 0 R >>'];
+  for (let i = 0; i < 60; i++) objects.push(`[ << /Kids ${4 + i} 0 R >> << /Kids ${4 + i} 0 R >> ]`);
+  objects.push('[ ]');
+  const tree = makePdf(objects);
+  assert.ok(tree.length < 8 * 1024);
+  assert.strictEqual(quick('页面树', () => pdfText(tree)).pages, 0);
+
+  // 正常的文件也有这样写的：Kids 数组单独是一个对象，页面直接写在数组里（字体从上一层继承）
+  const content = (text) => ({ stream: `BT /F1 12 Tf 72 720 Td (${text}) Tj ET` });
+  const inline = makePdf([
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids 4 0 R /Count 2 /Resources << /Font << /F1 3 0 R >> >> >>',
+    HELVETICA,
+    '[ << /Type /Page /Contents 5 0 R >> << /Type /Page /Contents 6 0 R >> ]',
+    content('First'),
+    content('Second'),
+  ]);
+  assert.strictEqual(pdfText(inline).text, '--- 1 ---\nFirst\n\n--- 2 ---\nSecond');
+
+  // trailer 说目录是 1 号对象，其实 1 号是别的东西：挨个对象找真正的目录
+  const page = '<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>';
+  const wrongRoot = makePdf([HELVETICA, '<< /Type /Pages /Kids [4 0 R] /Count 1 >>', HELVETICA, page, content('Found anyway'), '<< /Type /Catalog /Pages 2 0 R >>']);
+  assert.strictEqual(pdfText(wrongRoot).text, 'Found anyway');
+});
+
+test('PDF：几个字节就写出一个对象、写上几百万个的文件，解析到上限就停', () => {
+  const many = (unit, bytes) => unit.repeat(Math.floor(bytes / unit.length));
+  const packed = (body) => ({ dict: '/Type /ObjStm /N 1 /First 4 /Filter /FlateDecode', stream: deflate(`9 0 ${body}`) });
+  // 对象流里的 9 号对象是装着 500 万个空字典的数组（解压后 20 MB，文件只有 20 KB），页面树又指向它。
+  // 全部建出来要占 1 GB 以上的内存
+  const dicts = makePdf(['<< /Type /Catalog /Pages 2 0 R >>', '<< /Type /Pages /Kids 9 0 R >>', packed(`[${many('<<>>', 20e6)}]`)]);
+  assert.ok(dicts.length < 64 * 1024);
+  const r = quick('空字典', () => pdfText(dicts));
+  assert.deepStrictEqual({ pages: r.pages, truncated: r.truncated }, { pages: 0, truncated: true });
+
+  // 同样的大对象，没有人用到它：根本不解析，正文照常读
+  const unused = textPdf(['BT /F1 12 Tf 72 720 Td (Small page) Tj ET'], { more: [packed(`[${many('<<>>', 20e6)}]`)] });
+  const u = quick('用不到的对象', () => pdfText(unused));
+  assert.deepStrictEqual({ text: u.text, truncated: u.truncated }, { text: 'Small page', truncated: false });
+
+  // 内容流里的一个数组大得不正常：这一页读到这里为止
+  const big = textPdf([`BT /F1 12 Tf 72 720 Td (Before) Tj [${many('<<>>', 12e6)}] TJ (After) Tj ET`], { stream: (d) => flateStream(Buffer.from(d, 'latin1')) });
+  const cut = quick('内容流里的大数组', () => pdfText(big));
+  assert.deepStrictEqual({ text: cut.text, truncated: cut.truncated }, { text: 'Before', truncated: true });
+
+  // 对象流的目录里列了一百万个对象：登记到上限为止
+  const index = makePdf(['<< /Type /Catalog /Pages 2 0 R >>', '<< /Type /Pages /Kids [] /Count 0 >>', { dict: '/Type /ObjStm /N 100000000 /First 0 /Filter /FlateDecode', stream: deflate(many('7 0 ', 4e6)) }]);
+  assert.strictEqual(quick('对象流的目录', () => pdfText(index)).truncated, true);
+
+  // 对象的位置写成负数、大到没边的数：不理它（以前会从“很远的前面”一步一步走过来，等于卡死）
+  for (const [first, offset] of [['-900000000000000', '0'], ['0', `-${'9'.repeat(400)}`], ['0', '9'.repeat(400)]]) {
+    const far = makePdf(['<< /Type /Catalog /Pages 2 0 R >>', '<< /Type /Pages /Kids [9 0 R] >>', { dict: `/Type /ObjStm /N 1 /First ${first}`, stream: `9 ${offset} << /Type /Page >>` }]);
+    assert.strictEqual(quick('对象流里的位置', () => pdfText(far)).pages, 0, `${first} ${offset.slice(0, 8)}`);
+  }
+});
+
+test('PDF：字体的对照表（ToUnicode）写得再怪也只读一遍；一个区间几万个编码也不展开', () => {
+  const type0 = '<< /Type /Font /Subtype /Type0 /BaseFont /X /Encoding /Identity-H /ToUnicode 6 0 R >>';
+  const type1 = '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /ToUnicode 6 0 R >>';
+  const packed = (d) => flateStream(Buffer.from(d, 'latin1'));
+  const withMap = (cmap, content, font = type0) => textPdf([content], { font, more: [packed(cmap)], stream: packed });
+  const show = (s) => `BT /F1 12 Tf 72 720 Td ${s} Tj ET`;
+
+  // 区间：<0000>～<FFFF> 依次对应（有的软件给每个字体都写这么一张表）；另外单个写的优先
+  const identity = 'begincodespacerange <0000> <FFFF> endcodespacerange beginbfrange <0000> <FFFF> <0000> endbfrange beginbfchar <0041> <4E00> endbfchar';
+  assert.strictEqual(pdfText(withMap(identity, show('<4E2D6587004100420043>'))).text, '中文一BC');
+
+  // 60 个字体共用一张表，表里 31 个区间、每个 6 万多个编码：以前每个字体都展开一份，要一千多兆内存
+  let ranges = 'begincodespacerange <000000> <FFFFFF> endcodespacerange beginbfrange ';
+  for (let h = 1; h <= 31; h++) ranges += `<${h.toString(16).padStart(2, '0')}0000> <${h.toString(16).padStart(2, '0')}FFFF> <4E00> `;
+  const names = Array.from({ length: 60 }, (_, i) => `/F${i} ${6 + i} 0 R`).join(' ');
+  const manyFonts = makePdf([
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    `<< /Type /Page /Parent 2 0 R /Resources << /Font << ${names} >> >> /Contents 4 0 R >>`,
+    { stream: `BT ${Array.from({ length: 60 }, (_, i) => `/F${i} 12 Tf <010005> Tj`).join(' ')} ET` },
+    packed(`${ranges}endbfrange`),
+    ...Array.from({ length: 60 }, () => '<< /Type /Font /Subtype /Type0 /BaseFont /X /Encoding /Identity-H /ToUnicode 5 0 R >>'),
+  ]);
+  assert.strictEqual(quick('很多字体', () => pdfText(manyFonts)).text, String.fromCharCode(0x4e05).repeat(60));
+
+  // “<0><0>[” 写了十万遍，一个右括号都没有：以前的正则会从每一处都把后面整个读一遍
+  const noClose = withMap(`beginbfchar <41> <0041> endbfchar beginbfrange ${'<0><0>['.repeat(100000)} endbfrange`, show('(AAAA)'), type1);
+  assert.strictEqual(quick('没有右括号', () => pdfText(noClose)).text, 'AAAA');
+
+  // 声明了 400 种编码长度：只认 1～4 个字节的（以前解每个字都要把 400 种长度各试一遍）
+  let space = 'begincodespacerange ';
+  for (let l = 1; l <= 400; l++) space += `<${'00'.repeat(l)}> <${'FF'.repeat(l)}> `;
+  const lengths = withMap(`${space}endcodespacerange beginbfchar <0041> <0041> endbfchar`, show(`(${'\\000A'.repeat(50000)})`));
+  assert.strictEqual(quick('很多种长度', () => pdfText(lengths)).text, 'A'.repeat(50000));
+
+  // 一个编号对应两千个字，一个字符串里又用了二十万次：取够了字数就停，不把四亿个字都拼出来
+  const longValue = withMap(`beginbfchar <01> <${'0041'.repeat(2000)}> endbfchar`, show(`<${'01'.repeat(200000)}>`), type1);
+  const r = quick('很长的对应文字', () => pdfText(longValue, { maxChars: 50000 }));
+  assert.deepStrictEqual({ chars: r.text.length, truncated: r.truncated }, { chars: 50000, truncated: true });
+});
+
+test('PDF：内嵌图片、特别长的字形名这些“一步顶很多步”的地方也不会拖很久', () => {
+  // 两万个没有数据的内嵌图片，后面跟着 30 MB 别的内容：以前每遇到一个 BI 都把后面整个找一遍
+  const images = textPdf([`${'BI EI\n'.repeat(20000)}${'x'.repeat(30e6)}`], { stream: (d) => flateStream(Buffer.from(d, 'latin1')) });
+  assert.ok(images.length < 64 * 1024);
+  quick('内嵌图片', () => pdfText(images));
+  // 没写 ID 的 BI 不会把后面的文字和真正的图片一起吞掉
+  const mixed = textPdf(['BI EI BT /F1 12 Tf 72 720 Td (Kept) Tj ET BI /W 1 /H 1 /BPC 8 /CS /G ID \x00 EI BT 72 700 Td (Also kept) Tj ET']);
+  assert.strictEqual(pdfText(mixed).text, 'Kept\nAlso kept');
+
+  // 字形名：300 个两万字的名字（以前一个名字要拆 100 毫秒）；名字叫 constructor 的也只是一个不认识的字形
+  const longName = `/${'text'.repeat(5000)}`;
+  const glyphs = textPdf(['BT /F1 12 Tf 72 720 Td (AB) Tj ET'], { font: `<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding << /Differences [ 65 /constructor ${`0 ${longName} `.repeat(300)} 66 /B ] >> >>` });
+  assert.strictEqual(quick('字形名', () => pdfText(glyphs)).text, 'B');
+});
+
+test('Excel：一段很长的文字被几千个单元格引用，不会每个单元格都复制一份', () => {
+  // 共享字符串 8 MB，一行里 2000 个单元格都引用它：以前每个单元格复制一份，内存不够用，整个程序直接退出
+  const big = `${'a'.repeat(999)}\n`.repeat(8000);
+  const cells = '<c t="s"><v>0</v></c>'.repeat(2000);
+  const buf = makeXlsx([{ name: 'S', file: 'sheet1.xml', rows: `<row>${cells}</row><row><c t="inlineStr"><is><t>下一行</t></is></c></row>` }], { sharedStrings: `<si><t>${big}</t></si>` });
+  assert.ok(buf.length < 64 * 1024);
+  const info = {};
+  const text = quick('xlsx 共享字符串', () => officeRead(buf, info));
+  assert.ok(text.startsWith(`--- S ---\n${'a'.repeat(999)} aaa`), text.slice(0, 40));
+  assert.ok(text.length <= MAX_TEXT && text.length > MAX_TEXT - 100, `留下了 ${text.length} 字`);
+  assert.strictEqual(info.truncated, true);
+});
+
 // ---------- 真实软件生成的样本 ----------
 
 const DOCX_TEXT = ['# 季度总结 Quarterly Review', '# 一、销售情况', '第三季度销售额同比增长 18%，主要来自华东 & 华南的 <新客户>。', '## Details', 'Line one\twith a tab', 'First bullet', 'Second bullet', '地区\t销售额\t增长', '华东\t1200\t18%', '华南\t800\t25%', '结尾段落。The end.'].join('\n');

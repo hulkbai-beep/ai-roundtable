@@ -457,13 +457,13 @@ test('密钥：界面上只显示打码后的值，不重新填写时保持不�
 
 test('安全：拒绝其他网站和非本机 Host 的请求', async () => {
   const http = require('http');
-  const raw = (headers, method = 'GET', p = '/api/state') =>
+  const raw = (headers, method = 'GET', p = '/api/state', body = '{}') =>
     new Promise((resolve) => {
       const req = http.request({ host: '127.0.0.1', port: app.port, path: p, method, headers }, (res) => {
         res.resume();
         resolve(res.statusCode);
       });
-      req.end(method === 'POST' ? '{}' : undefined);
+      req.end(method === 'POST' ? body : undefined);
     });
   assert.strictEqual(await raw({ Host: 'evil.example.com' }), 403);
   assert.strictEqual(await raw({ Host: `127.0.0.1:${app.port}`, Origin: 'http://evil.example.com', 'Content-Type': 'application/json' }, 'POST', '/api/stop'), 403);
@@ -476,6 +476,12 @@ test('安全：拒绝其他网站和非本机 Host 的请求', async () => {
     assert.strictEqual(await raw({ Host: `127.0.0.1:${app.port}`, 'Content-Type': type }, 'POST', '/api/stop'), 200, type);
   }
   assert.strictEqual(await raw({ Host: `127.0.0.1:${app.port}` }, 'GET', '/../package.json'), 404);
+  // 内容必须是一个 JSON 对象：null、数字、数组、没写完的，都按“格式不对”回复（以前 null 会让服务端报出一段内部错误）
+  for (const body of ['null', '7', '[]', '"x"', 'true', '{']) {
+    for (const p of ['/api/upload', '/api/discard', '/api/send', '/api/stop']) {
+      assert.strictEqual(await raw({ Host: `127.0.0.1:${app.port}`, 'Content-Type': 'application/json' }, 'POST', p, body), 400, `${p} ${body}`);
+    }
+  }
 });
 
 test('导出和历史对话', async () => {
