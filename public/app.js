@@ -896,11 +896,13 @@
           ...rows.map(([k, label]) => {
             const w = u[k] || {};
             const est = w.estimated ? '≈' : '';
+            // 走缓存的输入便宜得多，不算进合计，鼠标停在合计上能看到
+            const cached = w.cached ? { title: T(`另有 ${fmtTokens(w.cached)} 走缓存的输入，没有计入合计`, `Plus ${fmtTokens(w.cached)} cached input tokens, not counted in the total`) } : null;
             return el(
               'tr',
               null,
               el('th', null, label),
-              el('td', null, `${est}${fmtTokens(w.total)}`),
+              el('td', cached, `${est}${fmtTokens(w.total)}${w.cached ? ' *' : ''}`),
               el('td', null, w.input ? `${est}${fmtTokens(w.input)}` : '–'),
               el('td', null, w.output ? `${est}${fmtTokens(w.output)}` : '–'),
               el('td', null, String(w.calls || 0))
@@ -934,8 +936,8 @@
         'p',
         { class: 'field-help usage-note' },
         T(
-          '订阅（Max、AI Pro、ChatGPT）的具体额度官方没有公开，这里只统计在 AI 圆桌里用了多少。“额度用完”是根据工具返回的报错判断的：到了恢复时间会自动回到群里；点名它或者在设置里点「保存并测试」也会再试一次。带 ≈ 的是按字数估算的（Antigravity CLI 不报告用量）。',
-          'Subscriptions (Max, AI Pro, ChatGPT) do not publish exact limits, so this only counts what AI Roundtable used. "Out of usage" comes from the error the tool returns: the member rejoins automatically at the reset time, and mentioning them or clicking "Save and test" in Settings tries again. Numbers with ≈ are estimated from text length (Antigravity CLI does not report usage).'
+          '订阅（Max、AI Pro、ChatGPT）的具体额度官方没有公开，这里只统计在 AI 圆桌里用了多少。合计 = 输入 + 输出；带 * 的另有走缓存的输入（便宜得多，没有计入合计，鼠标停在数字上可以看到）。“额度用完”是根据工具返回的报错判断的：到了恢复时间会自动回到群里；点名它或者在设置里点「保存并测试」也会再试一次。带 ≈ 的是按字数估算的（Antigravity CLI 不报告用量）。',
+          'Subscriptions (Max, AI Pro, ChatGPT) do not publish exact limits, so this only counts what AI Roundtable used. Total = input + output; a * means there were also cached input tokens (much cheaper, not counted in the total; hover over the number to see them). "Out of usage" comes from the error the tool returns: the member rejoins automatically at the reset time, and mentioning them or clicking "Save and test" in Settings tries again. Numbers with ≈ are estimated from text length (Antigravity CLI does not report usage).'
         )
       )
     );

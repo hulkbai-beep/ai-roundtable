@@ -29,16 +29,37 @@ process.stdin.on('end', () => {
     quote: input.includes('"引号"'),
     model: argAfter('--model'),
     effort: argAfter('--effort'),
+    final: sys >= 0 && args[sys + 1].includes('你是这一轮最后一个发言的人') ? true : undefined,
   };
   const result = input.includes('请只回复两个字') ? '在线' : `Claude：MOCK-CLAUDE ${JSON.stringify(info)}`;
   setTimeout(() => {
-    // 模拟 Max 额度用完：旧版的写法“…|恢复时间（秒）”
-    if (process.env.MOCK_CLAUDE_LIMIT) {
-      const reset = Math.floor(Date.now() / 1000) + 3 * 3600;
-      process.stdout.write(`${JSON.stringify({ type: 'result', subtype: 'success', is_error: true, result: `Claude AI usage limit reached|${reset}` })}\n`);
-      return;
+    const out = (obj, code = 0) => {
+      process.stdout.write(`${JSON.stringify(obj)}\n`);
+      process.exitCode = code;
+    };
+    // 模拟 Max 额度用完。写法取自 Claude Code 的官方 Error reference 和用户贴出来的 `claude -p --output-format json` 输出
+    const limit = process.env.MOCK_CLAUDE_LIMIT;
+    if (limit) {
+      const at = new Date(Date.now() + 3 * 3600 * 1000);
+      const clock = `${at.getHours() % 12 || 12}${at.getMinutes() ? `:${String(at.getMinutes()).padStart(2, '0')}` : ''}${at.getHours() < 12 ? 'am' : 'pm'}`;
+      const said = `You've hit your session limit · resets ${clock} (${Intl.DateTimeFormat().resolvedOptions().timeZone})`;
+      // 旧版的写法：“…|恢复时间（秒）”
+      if (limit === 'legacy') return out({ type: 'result', subtype: 'success', is_error: true, result: `Claude AI usage limit reached|${Math.floor(at.getTime() / 1000)}` }, 1);
+      // 有的版本没有 result，只有 api_error
+      if (limit === 'bare') return out({ type: 'result', subtype: 'success', terminal_reason: 'api_error', is_error: true, api_error_status: 429, api_error: 'usage_limit_reached' }, 1);
+      // 有的版本不报错，把这句话当成回复
+      if (limit === 'reply') return out({ type: 'result', subtype: 'success', is_error: false, result: said });
+      return out({ type: 'result', subtype: 'success', is_error: true, api_error_status: 429, result: said, terminal_reason: 'api_error' }, 1);
     }
-    const usage = { input_tokens: 100, cache_read_input_tokens: 1000, cache_creation_input_tokens: 0, output_tokens: 50 };
-    process.stdout.write(`${JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result, usage, modelUsage: { 'claude-mock': {} } })}\n`);
+    // 服务器暂时繁忙：也是 429，但不是额度用完
+    if (process.env.MOCK_CLAUDE_BUSY) {
+      return out({ type: 'result', subtype: 'success', is_error: true, api_error_status: 429, result: 'API Error: Server is temporarily limiting requests (not your usage limit)', terminal_reason: 'api_error' }, 1);
+    }
+    const usage = { input_tokens: 100, cache_read_input_tokens: 1000, cache_creation_input_tokens: 20, output_tokens: 50 };
+    // modelUsage 是所有模型调用的合计：这里多一次内部的辅助调用（7 + 3）
+    const modelUsage = process.env.MOCK_CLAUDE_MODEL_USAGE
+      ? { 'claude-mock': { inputTokens: 100, outputTokens: 50, cacheReadInputTokens: 1000, cacheCreationInputTokens: 20 }, 'claude-helper': { inputTokens: 7, outputTokens: 3, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 } }
+      : { 'claude-mock': {} };
+    out({ type: 'result', subtype: 'success', is_error: false, result, usage, modelUsage });
   }, Number(process.env.MOCK_DELAY || 100));
 });
