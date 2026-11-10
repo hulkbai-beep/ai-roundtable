@@ -373,6 +373,36 @@ test('HTTP 接口不接受图片时：去掉文件重试，告诉 AI 它看不�
   }
 });
 
+test('带上文件后请求太大、接口报 429 时：去掉文件重试，不会被当成额度用完', async () => {
+  await setMembers({ gpt: { provider: 'github-models' }, gemini: { provider: 'gemini-api' } });
+  api.setMode('files-429');
+  try {
+    await c.post('/api/new');
+    const img = await upload('大图.png', PNG);
+    const from = api.requests.length;
+    let s = await sendAndWait(c, { text: '@GPT @Gemini 看图', attachments: [img.id] });
+    assert.deepStrictEqual(s.messages.filter((m) => m.speaker === 'system'), [], JSON.stringify(s.messages.filter((m) => m.speaker === 'system')));
+    const note = '对方不接受图片 / PDF，附件 1（大图.png） 没能发过去';
+    assert.strictEqual(last(s, 'gpt').meta.note, note);
+    assert.strictEqual(last(s, 'gemini').meta.note, note);
+    assert.strictEqual(api.requests.length - from, 4);
+    assert.deepStrictEqual(s.members.map((m) => m.limited), [null, null, null], '没有人被标成“额度用完”');
+    // 真的额度用完（不带文件也是 429）时，照样按额度用完处理
+    api.setMode('429');
+    s = await sendAndWait(c, { text: '@GPT 再来' });
+    const gpt = s.members.find((m) => m.id === 'gpt');
+    assert.ok(gpt.limited, '这次是真的额度用完');
+    assert.strictEqual(s.messages[s.messages.length - 1].speaker, 'system');
+    // 测试连接成功后恢复，不影响后面的测试
+    api.setMode('ok');
+    assert.ok((await c.post('/api/test/gpt')).json.ok);
+    assert.strictEqual((await c.get('/api/state')).json.members.find((m) => m.id === 'gpt').limited, null);
+  } finally {
+    api.setMode('ok');
+    await setMembers({ gpt: { provider: 'codex-cli' }, gemini: { provider: 'agy-cli' } });
+  }
+});
+
 test('Claude Code 没有权限打开附件时，在回复上注明', async () => {
   process.env.MOCK_CLAUDE_DENY = '1';
   try {

@@ -38,6 +38,8 @@ function startMockApi() {
         // 带图片 / 文件时 content 是数组；'no-vision' 模拟不能看图的模型
         const raw = j.messages.find((m) => m.role === 'user').content;
         if (mode === 'no-vision' && Array.isArray(raw)) return send(400, { error: { message: 'Invalid content type. image_url is only supported by certain models.' } });
+        // 'files-429'：带上文件以后请求太大，接口按“每分钟的 token 数超了”报 429
+        if (mode === 'files-429' && Array.isArray(raw)) return send(429, { error: { message: 'Request too large for this model on tokens per min (TPM): Limit 30000, Requested 45210.' } });
         const user = Array.isArray(raw) ? raw.map((p) => p.text || '').join('\n') : raw;
         const info = { model: j.model, effort: j.reasoning_effort, system: j.messages.some((m) => m.role === 'system' && m.content.includes('你是 GPT')), blocks: (user.match(/^【[^】\n]+】$/gm) || []).length };
         const content = user.includes('请只回复两个字') ? '在线' : `GPT：MOCK-GPT ${JSON.stringify(info)}`;
@@ -49,6 +51,7 @@ function startMockApi() {
         const level = j.generationConfig && j.generationConfig.thinkingConfig && j.generationConfig.thinkingConfig.thinkingLevel;
         if (level && /lite/.test(g[1])) return send(400, { error: { message: 'Thinking level is not supported for this model.' } });
         if (mode === 'no-vision' && j.contents[0].parts.some((p) => p.inlineData)) return send(400, { error: { message: 'Unable to process input image. Please retry or report in https://developers.generativeai.google/guide/troubleshooting' } });
+        if (mode === 'files-429' && j.contents[0].parts.some((p) => p.inlineData)) return send(429, { error: { code: 429, status: 'RESOURCE_EXHAUSTED', message: 'Quota exceeded for metric: generate_content_free_tier_input_token_count, limit: 250000.' } });
         const text = j.contents[0].parts[0].text;
         const reply = text.includes('请只回复两个字') ? '在线' : `MOCK-GEMINI-API ${JSON.stringify({ system: !!j.systemInstruction, level })}`;
         return send(200, { modelVersion: g[1], usageMetadata: { promptTokenCount: 200, candidatesTokenCount: 30, thoughtsTokenCount: 20, totalTokenCount: 250 }, candidates: [{ content: { parts: [{ text: '（思考过程）', thought: true }, { text: reply }] } }] });

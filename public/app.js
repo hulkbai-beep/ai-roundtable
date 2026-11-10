@@ -112,10 +112,15 @@
   }
 
   let toastTimer;
+  // 提示显示在输入区上方：输入区带着附件、或者窗口变窄时会变高，位置跟着调整
+  function placeToast() {
+    $('#toast').style.bottom = `${$('.composer').offsetHeight + 14}px`;
+  }
+
   function toast(msg, kind = 'info', hint) {
     const t = $('#toast');
     t.className = `toast ${kind}`;
-    t.style.bottom = `${$('.composer').offsetHeight + 14}px`; // 输入区带着附件时会变高，提示始终显示在它上方
+    placeToast();
     t.replaceChildren(...[el('div', null, msg), hint ? el('div', { class: 'toast-hint' }, hint) : null].filter(Boolean));
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => t.classList.add('hidden'), kind === 'error' ? 8000 : 3000);
@@ -1346,6 +1351,7 @@
     LANG = prefs.get('lang', LANG) === 'en' ? 'en' : 'zh';
     applyStaticLang();
     initAttachments();
+    if (window.ResizeObserver) new ResizeObserver(placeToast).observe($('.composer'));
     const ta = $('#input');
     ta.addEventListener('input', () => {
       autosize();
