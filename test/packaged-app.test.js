@@ -6,7 +6,7 @@
 //   xvfb-run -a node test/packaged-app.test.js -- node_modules/electron/dist/electron --no-sandbox .
 //
 // 1. 冒烟测试：窗口能打开、界面能显示
-// 2. 用模拟的 claude / agy / codex 跑一轮真实的群聊
+// 2. 用模拟的 claude / agy / codex 跑一轮真实的群聊，再跑一轮带附件的
 // 3. （Windows）电脑上没有装 Node.js 时，npm 装的命令行工具也能靠桌面版自带的 Node 运行
 
 const { test, after } = require('node:test');
@@ -14,7 +14,8 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
-const { IS_WIN, tmpDir, makeMockBins, client, waitFor, sendAndWait, aiMessages, sleep } = require('./helpers');
+const { IS_WIN, tmpDir, makeMockBins, client, waitFor, sendAndWait, aiMessages, parseInfo, sleep } = require('./helpers');
+const { PNG, fixture } = require('./files');
 
 const sep = process.argv.indexOf('--');
 const [APP, ...APP_ARGS] = sep >= 0 ? process.argv.slice(sep + 1) : [];
@@ -99,6 +100,25 @@ test('桌面版里跑一轮完整的群聊（模拟的 AI）', async () => {
     assert.ok(ai[0].text.startsWith('MOCK-CLAUDE'), ai[0].text);
     assert.ok(ai[1].text.startsWith('MOCK-AGY'), ai[1].text);
     assert.ok(ai[2].text.startsWith('MOCK-CODEX'), ai[2].text);
+
+    // 带附件的一轮：图片和扫描的 PDF 保存在桌面版的数据目录里，三位都按拿到的路径读到了文件
+    const scan = fixture('scan.pdf');
+    const upload = async (name, buf) => {
+      const r = await c.post('/api/upload', { name, data: buf.toString('base64') });
+      assert.strictEqual(r.status, 200, r.text);
+      return r.json.attachment;
+    };
+    const img = await upload('截图 1.png', PNG);
+    const pdf = await upload('扫描件.pdf', scan);
+    const s2 = await sendAndWait(c, { text: '看看这两个附件', attachments: [img.id, pdf.id], rounds: 1 }, 60000);
+    const info = (who, tag) => parseInfo(aiMessages(s2).filter((m) => m.speaker === who).pop().text, tag);
+    const sizes = [PNG.length, scan.length];
+    assert.deepStrictEqual(info('claude', 'MOCK-CLAUDE').files.map((f) => f.size), sizes, 'Claude');
+    assert.deepStrictEqual(info('gemini', 'MOCK-AGY').files.map((f) => f.size), sizes, 'Antigravity');
+    const codex = info('gpt', 'MOCK-CODEX');
+    assert.deepStrictEqual(codex.images.map((f) => f.size), [PNG.length], 'Codex 的 --image');
+    assert.deepStrictEqual(codex.files.map((f) => f.size), sizes, 'Codex');
+    for (const m of aiMessages(s2).slice(-3)) assert.strictEqual(m.meta.note, '', `${m.speaker}: ${m.meta.note}`);
   } finally {
     kill(app);
     await sleep(1000);
