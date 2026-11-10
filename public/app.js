@@ -52,7 +52,7 @@
   let optionsFilled = false;
   let typingTimer = null;
   let shownTyping = new Set();
-  // 几位成员同时回答的时候：{ first: 这一批里第一条到达的回复 }；平时是 null
+  // 几位成员同时回答的时候：{ first: 这一批里第一条到达的回复, interrupted: 主持人中途插话了 }；平时是 null
   let burst = null;
 
   // ---------- 小工具 ----------
@@ -371,8 +371,10 @@
     updateWelcome();
     let first = null;
     if (burst && animate) {
-      if (m.speaker === 'user') burst.first = null; // 主持人插话了：后面到的回复重新算
-      else if (stick) {
+      // 主持人插话了：这一批剩下的回复和平时一样，到一条就跟到最下面。
+      // 不然画面会停在半路，接下来对新消息的回答就看不到了
+      if (m.speaker === 'user') burst.interrupted = true;
+      else if (stick && !burst.interrupted) {
         first = burst.first;
         if (!first) burst.first = node;
       }
@@ -408,7 +410,9 @@
     clearInterval(typingTimer);
     const list = state.typing;
     // 有新的成员开始发言时才跟到最下面；有人说完、提示变少时不动
-    const stick = list.some((t) => !shownTyping.has(t.speaker)) && nearBottom();
+    const hasNew = list.some((t) => !shownTyping.has(t.speaker));
+    // 几位同时开始时，几行提示加起来比“接近底部”的范围还高，所以要在加进页面之前量
+    const wasNear = nearBottom();
     shownTyping = new Set(list.map((t) => t.speaker));
     if (!list.length) {
       box.className = 'hidden';
@@ -435,7 +439,8 @@
     const tick = () => ticks.forEach((f) => f());
     tick();
     typingTimer = setInterval(tick, 1000);
-    if (stick) requestAnimationFrame(toBottom);
+    // 只有一位时和以前一样，提示加进页面之后再量
+    if (hasNew && (list.length > 1 ? wasNear : nearBottom())) requestAnimationFrame(toBottom);
   }
 
   function renderMembers() {

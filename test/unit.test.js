@@ -199,6 +199,28 @@ test('发言计划：各自回答时同一轮的人一起回答，其他模式�
   assert.strictEqual(table.lineup(ids, 'discuss'), ids, '设置里关掉后按排好的顺序');
 });
 
+test('插话：发新消息时还在说话的那位，新的一轮不会紧接着又第一个说', () => {
+  const { Roundtable } = require('../lib/orchestrator');
+  const ids = ['claude', 'gemini', 'gpt'];
+  const cfg = { shuffleOrder: true, order: ids, members: Object.fromEntries(ids.map((id) => [id, { enabled: true }])) };
+  const table = new Roundtable({ config: { get: () => cfg }, conversations: { current: { id: 'c', messages: [] }, saveSoon() {} } });
+  table.kick = () => {}; // 只看排出来的计划，不真的去调用
+  for (let i = 0; i < 60; i++) {
+    const talking = ids[i % 3];
+    table.active.clear();
+    table.active.set(talking, {});
+    const prevFirst = table.lastFirst;
+    table.send({ text: `话题 ${i}`, mode: i % 2 ? 'debate' : 'discuss', rounds: 2 });
+    const order = table.queue.map((step) => step[0].speaker);
+    assert.deepStrictEqual([...order.slice(0, 3)].sort(), ids);
+    assert.notStrictEqual(order[0], talking, `${talking} 还在说话，却又排在第一个`);
+    assert.notStrictEqual(order[0], prevFirst, '上一条消息先说的那位也不排第一个');
+  }
+  // 合作模式不换顺序
+  table.send({ text: '一起写', mode: 'collab' });
+  assert.deepStrictEqual(table.queue.map((step) => step[0].speaker), ids);
+});
+
 test('轮到谁：主持人最新一条消息之后，是第一个回答、接着别人回答，还是已经回答过', () => {
   const { turnPosition } = require('../lib/prompt');
   const msgs = [

@@ -8,7 +8,7 @@ const assert = require('assert');
 const path = require('path');
 const { createAppServer } = require('../lib/app-server');
 const { startMockApi } = require('./mocks/api');
-const { ROOT, MOCKS, IS_WIN, tmpDir, makeBin, makeMockBins, client, sendAndWait, waitIdle, waitFor, aiMessages, parseInfo, sleep } = require('./helpers');
+const { ROOT, MOCKS, IS_WIN, tmpDir, makeBin, makeMockBins, client, listen, sendAndWait, waitIdle, waitFor, aiMessages, parseInfo, sleep } = require('./helpers');
 
 let app;
 let api;
@@ -117,9 +117,11 @@ test('各自回答：大家同时回答，互相看不到这一轮的回答', as
     await c.post('/api/new');
     const r = await c.post('/api/send', { text: '用一句话解释量子纠缠', mode: 'independent', rounds: 1 });
     assert.strictEqual(r.status, 200);
-    // 一发出去三位就都在回答，后面没有排队的发言
+    // 一发出去三位就一起开始回答，后面没有排队的发言。模拟的 codex 不会等，有可能这时已经答完了
     const start = (await c.get('/api/state')).json;
-    assert.deepStrictEqual(start.state.typing.map((t) => t.speaker).sort(), ALL);
+    const typing = start.state.typing.map((t) => t.speaker);
+    assert.deepStrictEqual([...typing, ...aiMessages(start).map((m) => m.speaker)].sort(), ALL, '三位要么正在回答，要么已经答完');
+    assert.ok(typing.includes('claude') && typing.includes('gemini'), `Claude 和 Gemini 这时都应该在回答：${typing}`);
     assert.deepStrictEqual({ busy: start.state.busy, queued: start.state.queued }, { busy: true, queued: 0 });
     // 排在最后的 GPT 先答完了，这时排在前面的 Claude 和 Gemini 还在回答：说明不是一个一个轮着来的
     const mid = await waitFor(
@@ -143,13 +145,66 @@ test('各自回答：大家同时回答，互相看不到这一轮的回答', as
 });
 
 test('各自回答两轮：每一轮都是大家一起回答，第二轮只看得到自己上一轮说的', async () => {
-  await c.post('/api/new');
-  const s = await sendAndWait(c, { text: '各自说两轮', mode: 'independent', rounds: 2 });
-  const ai = aiMessages(s);
-  assert.strictEqual(ai.length, 6);
-  assert.deepStrictEqual(ai.slice(0, 3).map((m) => m.speaker).sort(), ALL, '第一轮三位都说完，才开始第二轮');
-  assert.deepStrictEqual(ai.slice(3).map((m) => m.speaker).sort(), ALL);
-  assert.deepStrictEqual(ai.map(blocksOf), [1, 1, 1, 2, 2, 2]);
+  // 模拟的 claude 和 agy 等 2 秒才回复，codex 马上回复
+  process.env.MOCK_DELAY = '2000';
+  try {
+    await c.post('/api/new');
+    await c.post('/api/send', { text: '各自说两轮', mode: 'independent', rounds: 2 });
+    // 第二轮也是一起回答：第一轮三位都说完之后，第二轮最先到的是 GPT，这时 Claude 和 Gemini 还在回答
+    const mid = await waitFor(
+      async () => {
+        const s = (await c.get('/api/state')).json;
+        return aiMessages(s).length > 3 && s;
+      },
+      { timeout: 15000, interval: 50, label: 'the first answer of round two' }
+    );
+    assert.deepStrictEqual(aiMessages(mid).slice(3).map((m) => m.speaker), ['gpt']);
+    assert.deepStrictEqual(mid.state.typing.map((t) => t.speaker).sort(), ['claude', 'gemini']);
+
+    const s = await waitIdle(c);
+    const ai = aiMessages(s);
+    assert.strictEqual(ai.length, 6);
+    assert.deepStrictEqual(ai.slice(0, 3).map((m) => m.speaker).sort(), ALL, '第一轮三位都说完，才开始第二轮');
+    assert.deepStrictEqual(ai.slice(3).map((m) => m.speaker).sort(), ALL);
+    assert.deepStrictEqual(ai.map(blocksOf), [1, 1, 1, 2, 2, 2]);
+  } finally {
+    delete process.env.MOCK_DELAY;
+  }
+});
+
+test('大家同时回答时有人出错：其他人照常回答，界面马上知道排队的次数变了', async () => {
+  // Gemini 一上来就出错，Claude 等 1.5 秒才回复
+  process.env.MOCK_AGY_SILENT = '1';
+  process.env.MOCK_DELAY = '1500';
+  const feed = listen(app.port);
+  try {
+    await waitFor(() => feed.events.length, { timeout: 5000, interval: 20, label: 'the event stream to open' });
+    await c.post('/api/new');
+    await c.post('/api/send', { text: '各自说两轮，其中一位出错', mode: 'independent', rounds: 2 });
+    // 界面靠 state 事件知道“后面还有几次发言在排队”。Gemini 第二轮的发言去掉之后（3 次变 2 次），
+    // 不用等 Claude 说完就要收到新的数字
+    const n = await waitFor(() => feed.events.findIndex((e) => e.event === 'state' && e.data.queued === 2) + 1, {
+      timeout: 10000,
+      interval: 20,
+      label: 'a state event with two replies queued',
+    });
+    const sofar = feed.events.slice(0, n);
+    assert.ok(sofar[n - 1].data.typing.some((t) => t.speaker === 'claude'), '这时 Claude 还在回答');
+    assert.ok(!sofar.some((e) => e.event === 'msg' && e.data.speaker === 'claude'));
+
+    const s = await waitIdle(c, 15000);
+    const errors = s.messages.filter((m) => m.speaker === 'system');
+    assert.strictEqual(errors.length, 1);
+    assert.ok(errors[0].text.includes('Gemini 发言失败') && errors[0].text.includes('这一轮 Gemini 后面的发言先跳过'), errors[0].text);
+    const ai = aiMessages(s);
+    assert.deepStrictEqual(ai.slice(0, 2).map((m) => m.speaker).sort(), ['claude', 'gpt']);
+    assert.deepStrictEqual(ai.slice(2).map((m) => m.speaker).sort(), ['claude', 'gpt'], '第二轮只剩 Claude 和 GPT');
+    assert.deepStrictEqual(ai.map(blocksOf), [1, 1, 2, 2]);
+  } finally {
+    feed.close();
+    delete process.env.MOCK_AGY_SILENT;
+    delete process.env.MOCK_DELAY;
+  }
 });
 
 test('停止：大家同时回答时，一次停掉所有还在回答的成员', async () => {
