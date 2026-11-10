@@ -59,6 +59,13 @@ process.stdin.on('end', () => {
   };
   const result = input.includes('请只回复两个字') ? '在线' : `Claude：MOCK-CLAUDE ${JSON.stringify(info)}`;
   setTimeout(() => {
-    process.stdout.write(`${JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result, modelUsage: { 'claude-mock': {} } })}\n`);
+    // 模拟 Max 额度用完：旧版的写法“…|恢复时间（秒）”
+    if (process.env.MOCK_CLAUDE_LIMIT) {
+      const reset = Math.floor(Date.now() / 1000) + 3 * 3600;
+      process.stdout.write(`${JSON.stringify({ type: 'result', subtype: 'success', is_error: true, result: `Claude AI usage limit reached|${reset}` })}\n`);
+      return;
+    }
+    const usage = { input_tokens: 100, cache_read_input_tokens: 1000, cache_creation_input_tokens: 0, output_tokens: 50 };
+    process.stdout.write(`${JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result, usage, modelUsage: { 'claude-mock': {} } })}\n`);
   }, Number(process.env.MOCK_DELAY || 100));
 });

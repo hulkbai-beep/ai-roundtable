@@ -153,6 +153,123 @@ test('某位成员出错：显示原因和建议，其他人照常发言', async
   }
 });
 
+test('用量：记下每位成员用了多少 token，回复上标出来', async () => {
+  await c.post('/api/usage/reset', {});
+  await c.post('/api/new');
+  const s = await sendAndWait(c, { text: '聊聊用量', rounds: 1 });
+  const ai = aiMessages(s);
+  const by = (who) => ai.find((m) => m.speaker === who);
+  assert.strictEqual(by('claude').meta.tokens, 1150, 'Claude Code 的 usage 里的输入、缓存和输出都算上');
+  assert.strictEqual(by('gpt').meta.tokens, 1234, 'Codex 输出里的 tokens used');
+  assert.ok(by('gemini').meta.tokens > 0 && by('gemini').meta.tokensEstimated, 'agy 不报用量，按字数估算');
+  const m = Object.fromEntries(s.members.map((x) => [x.id, x]));
+  assert.deepStrictEqual(
+    { total: m.claude.usage.h5.total, calls: m.claude.usage.h5.calls, est: m.claude.usage.h5.estimated },
+    { total: 1150, calls: 1, est: false }
+  );
+  assert.strictEqual(m.gpt.usage.day.total, 1234);
+  assert.ok(m.gemini.usage.week.estimated);
+  await c.post('/api/usage/reset', { member: 'claude' });
+  const after = (await c.get('/api/state')).json.members.find((x) => x.id === 'claude');
+  assert.strictEqual(after.usage.week.calls, 0);
+});
+
+test('额度用完：提醒、标出来，其他成员继续；点名会再试，成功就恢复', async () => {
+  const limitedOf = async (id) => (await c.get('/api/state')).json.members.find((x) => x.id === id).limited;
+  process.env.MOCK_CODEX_LIMIT = '1';
+  try {
+    await c.post('/api/new');
+    let s = await sendAndWait(c, { text: '两轮讨论', rounds: 2 });
+    const alerts = s.messages.filter((x) => x.alert === 'limit');
+    assert.strictEqual(alerts.length, 1, '只提醒一次');
+    assert.strictEqual(alerts[0].member, 'gpt');
+    assert.ok(alerts[0].text.includes('GPT 的额度用完了') && alerts[0].text.includes('Claude、Gemini'), alerts[0].text);
+    assert.deepStrictEqual(aiMessages(s).map((x) => x.speaker), ['claude', 'gemini', 'claude', 'gemini']);
+    const lim = await limitedOf('gpt');
+    assert.strictEqual(lim.provider, 'codex-cli');
+    assert.ok(Math.abs(lim.resetAt - (Date.now() + 125 * 60000)) < 60000, '读出“2 hours 5 minutes”');
+
+    // 继续聊：直接跳过 GPT（刚提醒过，不再重复说明）
+    const before = s.messages.length;
+    await c.post('/api/continue', { rounds: 1 });
+    s = await waitIdle(c);
+    assert.deepStrictEqual(s.messages.slice(before).map((x) => x.speaker), ['claude', 'gemini']);
+
+    // 新对话里第一次发言时说明一下
+    await c.post('/api/new');
+    s = await sendAndWait(c, { text: '新话题' });
+    assert.ok(s.messages[1].speaker === 'system' && s.messages[1].text.includes('GPT 额度用完了，这次由 Claude、Gemini 继续'), s.messages[1].text);
+    assert.deepStrictEqual(aiMessages(s).map((x) => x.speaker), ['claude', 'gemini']);
+  } finally {
+    delete process.env.MOCK_CODEX_LIMIT;
+  }
+  // 额度恢复后点名 GPT：再试一次，成功就去掉标记
+  const s = await sendAndWait(c, { text: '@GPT 你回来了吗' });
+  const tail = s.messages.slice(-4);
+  assert.ok(tail[1].text.includes('按你的点名再试一次'), tail[1].text);
+  assert.ok(tail[2].text.includes('额度恢复了'), tail[2].text);
+  assert.strictEqual(tail[3].speaker, 'gpt');
+  assert.strictEqual(await limitedOf('gpt'), null);
+});
+
+test('额度用完：所有人都用完时提示；换接入方式或点“再试一次”就清掉', async () => {
+  process.env.MOCK_CLAUDE_LIMIT = '1';
+  process.env.MOCK_AGY_LIMIT = '1';
+  process.env.MOCK_CODEX_LIMIT = '1';
+  try {
+    await c.post('/api/new');
+    let s = await sendAndWait(c, { text: '大家都没额度了' });
+    assert.strictEqual(s.messages.filter((x) => x.alert === 'limit').length, 3);
+    const m = Object.fromEntries(s.members.map((x) => [x.id, x]));
+    assert.ok(m.claude.limited.resetAt > Date.now() + 2 * 3600 * 1000, 'Claude 的恢复时间来自 “|时间戳”');
+    assert.strictEqual(m.gemini.limited.resetAt, null);
+    assert.ok(s.messages[s.messages.length - 1].text.includes('所有成员的额度都用完了'));
+
+    s = await sendAndWait(c, { text: '还有人吗' });
+    const last = s.messages[s.messages.length - 1];
+    assert.ok(last.speaker === 'system' && last.text.includes('现在没人能发言'), last.text);
+
+    // 连接测试遇到额度用完也会标记
+    const t = (await c.post('/api/test/claude')).json;
+    assert.ok(!t.ok && t.limited);
+  } finally {
+    delete process.env.MOCK_CLAUDE_LIMIT;
+    delete process.env.MOCK_AGY_LIMIT;
+    delete process.env.MOCK_CODEX_LIMIT;
+  }
+  // GPT 换成 GitHub Models：之前 Codex 的标记不算数
+  await c.post('/api/config', { members: { gpt: { provider: 'github-models' } } });
+  try {
+    const gpt = (await c.get('/api/state')).json.members.find((x) => x.id === 'gpt');
+    assert.strictEqual(gpt.limited, null);
+  } finally {
+    await c.post('/api/config', { members: { gpt: { provider: 'codex-cli' } } });
+  }
+  // “再试一次”：手动清掉标记；连接测试成功也会清掉
+  const r = (await c.post('/api/usage/retry', { member: 'claude' })).json;
+  assert.strictEqual(r.members.find((x) => x.id === 'claude').limited, null);
+  assert.ok((await c.post('/api/test/gemini')).json.ok);
+  await c.post('/api/usage/retry', { member: 'gpt' });
+  const s = await sendAndWait(c, { text: '都回来了吗' });
+  assert.deepStrictEqual(aiMessages(s).slice(-3).map((x) => x.speaker).sort(), ['claude', 'gemini', 'gpt']);
+});
+
+test('额度用完（接口）：HTTP 429 标记为额度用完，Retry-After 给出恢复时间', async () => {
+  await c.post('/api/config', { members: { gpt: { provider: 'github-models' } } });
+  api.setMode('429');
+  try {
+    await c.post('/api/new');
+    const s = await sendAndWait(c, { text: '@GPT 你好' });
+    const gpt = s.members.find((x) => x.id === 'gpt');
+    assert.strictEqual(gpt.limited.provider, 'github-models');
+    assert.ok(Math.abs(gpt.limited.resetAt - (Date.now() + 120000)) < 10000, gpt.limited.resetAt);
+  } finally {
+    api.setMode('ok');
+    await c.post('/api/usage/retry', { member: 'gpt' });
+    await c.post('/api/config', { members: { gpt: { provider: 'codex-cli' } } });
+  }
+});
+
 test('模型和思考强度：传给命令行和接口，回复上标出来；不支持时自动忽略', async () => {
   await c.post('/api/config', {
     members: {

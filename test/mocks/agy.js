@@ -3,6 +3,11 @@
 const fs = require('fs');
 const args = process.argv.slice(2);
 if (process.env.MOCK_AGY_SILENT) process.exit(0);
+// 模拟 AI Pro 额度用完（不说什么时候恢复）
+if (process.env.MOCK_AGY_LIMIT) {
+  console.error('Error: RESOURCE_EXHAUSTED: Quota exceeded for this account.');
+  process.exit(1);
+}
 // 提示词末尾列出的附件文件（“- 附件 1（a.png）：路径”），以及按这个路径是不是真的读得到（size 是文件大小，读不到是 -1）
 function listedFiles(prompt) {
   const out = [];
