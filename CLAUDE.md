@@ -7,7 +7,7 @@
 - `electron/main.js`：桌面版。启动 `lib/app-server.js`（数据在 `%APPDATA%\AI Roundtable`），再用 BrowserWindow 打开 `http://127.0.0.1:<port>`。
 - `server.js` + `start.bat`：浏览器版，数据在仓库目录下（`config.json`、`data/`、`workspace/`，已加入 .gitignore）。
 - `lib/app-server.js`：HTTP 接口和 SSE 推送，只接受本机 Host/Origin，POST 必须是 JSON。
-- `lib/orchestrator.js`：发言队列。新消息会替换还没轮到的发言；@点名只让被点到的人说一次；某人出错后，这一轮里他后面的发言会跳过。
+- `lib/orchestrator.js`：发言计划，是一串“步骤”，每一步里的成员同时调用（`plan` / `runStep`）。「各自回答」把同一轮的人放进同一步，一起回答；其他模式一步只有一个人，后面的人能看到前面的发言。新消息会替换还没轮到的发言；@点名只让被点到的人说一次；某人出错后，这一轮里他后面的发言会跳过。`typing` 事件和 `state().typing` 是数组，因为可能有好几位同时在说；每位说完（或出错）都会推一次 `state`，界面上“还有几次发言在排队”才不会过时。
 - `lib/providers.js`：各种接入方式。`lib/prompt.js`：人设和聊天记录拼装（太长时保留第一条话题和最近的消息）。
 - `lib/spawn.js`：Windows 上启动命令行工具（见下文）。
 - `lib/usage.js`：每次发言用了多少 token、谁的额度用完了（存在 `usage.json`）。`lib/limits.js`：从工具的报错里认出“额度用完了”，读出什么时候恢复。
@@ -23,6 +23,7 @@
 - **订阅只能通过官方命令行工具使用。** Claude 用 `claude -p --output-format json --system-prompt … --tools ""`，提示词从标准输入传。不要换成 Agent SDK 或直接调接口，那样走的不是用户的 Max 订阅。
 - **Gemini CLI 从 2026-06-18 起不再支持 AI Pro 登录**，所以 Gemini 默认用 Antigravity CLI（`agy -p "<提示词>"`），提示词作为命令行参数传，Windows 上要求直接启动 .exe（`requireDirect`），长度上限约 30000 字。agy 的行为以官方公开的更新日志为准（GitHub 上 google-antigravity/antigravity-cli 的 `CHANGELOG.md`：`-p` / `--print` / `--prompt`、`--model`、`--effort`、`--output-format text|json|stream-json`；出错时 stderr 上有 `error: …` 和一行 `AGY_ERROR: {…}`，退出码 3；旧版本在程序里调用会卡住或者没有输出，后来修了），但还没有在真机上验证过。备选是 `gemini-api`（API Key，不走订阅）。
 - **GPT 默认用 Codex CLI**（`codex exec --sandbox read-only -o <文件> -`，提示词从标准输入传），用户用 ChatGPT 账号登录，免费账号也能用（OpenAI 可能只是限时开放）。1.0.1 起默认从 GitHub Models 换成了 Codex：`lib/store.js` 会把 version 1 配置里的 github-models 迁移成 codex-cli。备选是 GitHub Models 免费额度（`https://models.github.ai/inference`，fine-grained token 需要 models:read；免费档每次请求约 8000 token，所以只带 5000 字聊天记录）和自定义 OpenAI 兼容接口。
+- **发言顺序**：只有「各自回答」是大家同时回答（用量不变，只需要等最慢的那一位）。自由讨论和辩论还是轮流说，但默认每条消息随机换一个顺序（`lineup` / `shuffled`，设置项 `shuffleOrder`；上一次先说的那位、「继续聊」时刚说完话的那位、发新消息时还在说话的那位尽量不排第一个；同一条消息的几轮顺序相同），人设里让后说的人先用一两句话说出自己的看法再接话（`prompt.js` 的 `REPLY_RULES` / `turnPosition`），减少跟风。考虑过“所有模式都同时回答”，没有采用：只聊一轮时它和「各自回答」没有区别，大家也没法互相接话；要互相回应就得多聊一轮，用量翻倍。合作模式要在前面的人的成果上接着做，所以始终按设置里排的顺序。@点名按点名的顺序一个一个说，「各自回答」模式下点了两位以上也是这样（这时按自由讨论来，不然后面的人看不到前面的回答）。
 - **Windows 启动策略**：.exe 直接启动（Node 负责参数转义）；npm 生成的 .cmd 会被解析成“node + 脚本”直接启动（优先用 npm 目录里的 node.exe，其次 PATH 里的 node，桌面版没有 Node 时用 Electron 自带的，设置 `ELECTRON_RUN_AS_NODE=1`）；其他 .cmd 只能经过 cmd.exe，这时只传简单参数，人设并进标准输入。
 - **兼容不同版本**：可选参数分组传递，命令行报“不认识的参数”时去掉那一组再试（`runAdaptive`）。
 - **用量**（`lib/usage.js`，数据在 `usage.json`，只留 30 天）：每次发言记录 token。各家统一成“合计 = 没走缓存的输入 + 输出”（Codex 自己报的就是这个数），走缓存的输入单独记在 `cached` 里，界面上用 * 标出。Claude 读 JSON 里的 `modelUsage`（这次运行所有模型调用的合计；没有时读 `usage`），Codex 读 stderr 末尾的 `tokens used`（数字按系统语言加分隔符，例如 `1.234`），接口读 `usage` / `usageMetadata`；agy 不报用量，按字数估算并标 ≈。

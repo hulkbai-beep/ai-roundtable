@@ -1389,6 +1389,12 @@ textarea.input {
   cursor: pointer;
 }
 
+/* 勾选项下面的说明，和勾选项的文字对齐 */
+.check-help {
+  display: block;
+  margin: 3px 0 0 28px;
+}
+
 .switch {
   position: relative;
   display: inline-block;

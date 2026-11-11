@@ -127,6 +127,169 @@ test('人设：只列出参加的成员，合作模式最后一位负责总结�
   assert(sys.includes('你是投资人'));
 });
 
+test('发言顺序：随机排，尽量不让指定的成员排第一个', () => {
+  const { shuffled } = require('../lib/orchestrator');
+  const ids = ['claude', 'gemini', 'gpt'];
+  const seen = new Set();
+  for (let i = 0; i < 600; i++) {
+    const order = shuffled(ids);
+    assert.deepStrictEqual([...order].sort(), ids, '每位成员正好出现一次');
+    seen.add(order.join(' '));
+  }
+  assert.strictEqual(seen.size, 6, '六种顺序都会出现');
+  assert.deepStrictEqual(ids, ['claude', 'gemini', 'gpt'], '不改动传进来的数组');
+
+  for (let i = 0; i < 100; i++) {
+    assert.notStrictEqual(shuffled(ids, { avoid: ['claude'] })[0], 'claude');
+    assert.strictEqual(shuffled(ids, { avoid: ['claude', 'gpt'] })[0], 'gemini');
+    // 都避不开时，先保证写在前面的那位不排第一个
+    assert.strictEqual(shuffled(['claude', 'gemini'], { avoid: ['claude', 'gemini'] })[0], 'gemini');
+    assert.strictEqual(shuffled(ids, { avoid: ['gpt', 'claude', 'gemini'] })[0], 'gemini');
+  }
+
+  // 随机数固定时结果也固定
+  assert.deepStrictEqual(shuffled(ids, { random: () => 0 }), ['claude', 'gpt', 'gemini']);
+  assert.deepStrictEqual(shuffled(ids, { random: () => 0.999 }), ['gpt', 'claude', 'gemini']);
+  assert.deepStrictEqual(shuffled(ids, { random: () => 1 }), ['gpt', 'claude', 'gemini'], '随机数取到 1 也不会越界');
+  assert.deepStrictEqual(shuffled(['gpt'], { avoid: ['gpt'] }), ['gpt']);
+  assert.deepStrictEqual(shuffled([]), []);
+});
+
+test('发言计划：各自回答时同一轮的人一起回答，其他模式一个一个来；只有自由讨论和辩论换顺序', () => {
+  const { Roundtable } = require('../lib/orchestrator');
+  const ids = ['claude', 'gemini', 'gpt'];
+  const cfg = { shuffleOrder: true, order: ids, members: {} };
+  const table = new Roundtable({ config: { get: () => cfg }, conversations: { current: { id: 'c', messages: [] } } });
+  const speakers = (steps) => steps.map((step) => step.map((t) => t.speaker));
+
+  const together = table.plan(ids, 2, 'independent', 'short');
+  assert.deepStrictEqual(speakers(together), [ids, ids]);
+  for (const mode of ['discuss', 'debate', 'collab']) {
+    const turns = table.plan(ids, 2, mode, 'short');
+    assert.deepStrictEqual(speakers(turns), [['claude'], ['gemini'], ['gpt'], ['claude'], ['gemini'], ['gpt']]);
+    assert.deepStrictEqual(turns.flat().map((t) => t.isFinal), [false, false, false, false, false, true], '只有最后一次发言是 isFinal');
+  }
+  assert.deepStrictEqual(table.plan([], 3, 'discuss', 'short'), []);
+
+  table.queue = table.plan(ids, 2, 'independent', 'short');
+  assert.strictEqual(table.queued(), 6);
+  assert.strictEqual(table.dropTurns('gemini'), 2);
+  assert.deepStrictEqual(speakers(table.queue), [['claude', 'gpt'], ['claude', 'gpt']]);
+  table.queue = table.plan(ids, 1, 'discuss', 'short');
+  assert.strictEqual(table.dropTurns('gpt'), 1);
+  assert.deepStrictEqual(speakers(table.queue), [['claude'], ['gemini']], '空了的步骤要去掉');
+  assert.deepStrictEqual(table.queue.flat().map((t) => t.isFinal), [false, true], '负责总结的那位被去掉了，改由剩下的最后一位总结');
+  table.queue = table.plan(ids, 2, 'collab', 'short');
+  table.dropTurns('claude');
+  assert.deepStrictEqual(table.queue.flat().map((t) => t.isFinal), [false, false, false, true], '去掉的不是最后一位时不变');
+  table.queue = [];
+
+  table.random = () => 0;
+  assert.strictEqual(table.lineup(ids, 'collab'), ids, '合作模式按排好的顺序');
+  assert.strictEqual(table.lineup(ids, 'independent'), ids, '各自回答没有先后');
+  assert.deepStrictEqual(table.lineup(ids, 'discuss'), ['claude', 'gpt', 'gemini']);
+  assert.deepStrictEqual(table.lineup(ids, 'debate'), ['gemini', 'gpt', 'claude'], '上一条消息是 Claude 先说的，这次换一位');
+  // 继续聊：刚说完话的 GPT 不排第一个，上次先说的 Gemini 也不排第一个
+  assert.deepStrictEqual(table.lineup(ids, 'discuss', ['gpt']), ['claude', 'gpt', 'gemini']);
+  // 只有两位时：两个条件顾不过来，先保证刚说完话的那位不排第一个
+  assert.deepStrictEqual(table.lineup(['claude', 'gemini'], 'discuss', ['gemini']), ['claude', 'gemini']);
+  assert.deepStrictEqual(table.lineup(['gpt'], 'discuss'), ['gpt']);
+
+  cfg.shuffleOrder = false;
+  assert.strictEqual(table.lineup(ids, 'discuss'), ids, '设置里关掉后按排好的顺序');
+});
+
+test('插话：发新消息时还在说话的那位，新的一轮不会紧接着又第一个说', () => {
+  const { Roundtable } = require('../lib/orchestrator');
+  const ids = ['claude', 'gemini', 'gpt'];
+  const cfg = { shuffleOrder: true, order: ids, members: Object.fromEntries(ids.map((id) => [id, { enabled: true }])) };
+  const table = new Roundtable({ config: { get: () => cfg }, conversations: { current: { id: 'c', messages: [] }, saveSoon() {} } });
+  table.kick = () => {}; // 只看排出来的计划，不真的去调用
+  for (let i = 0; i < 60; i++) {
+    const talking = ids[i % 3];
+    table.active.clear();
+    table.active.set(talking, {});
+    const prevFirst = table.lastFirst;
+    table.send({ text: `话题 ${i}`, mode: i % 2 ? 'debate' : 'discuss', rounds: 2 });
+    const order = table.queue.map((step) => step[0].speaker);
+    assert.deepStrictEqual([...order.slice(0, 3)].sort(), ids);
+    assert.notStrictEqual(order[0], talking, `${talking} 还在说话，却又排在第一个`);
+    assert.notStrictEqual(order[0], prevFirst, '上一条消息先说的那位也不排第一个');
+  }
+  // 合作模式不换顺序
+  table.send({ text: '一起写', mode: 'collab' });
+  assert.deepStrictEqual(table.queue.map((step) => step[0].speaker), ids);
+});
+
+test('轮到谁：主持人最新一条消息之后，是第一个回答、接着别人回答，还是已经回答过', () => {
+  const { turnPosition } = require('../lib/prompt');
+  const msgs = [
+    { speaker: 'user', text: '第一个问题' },
+    { speaker: 'claude', text: 'C1' },
+    { speaker: 'system', text: '提示' },
+  ];
+  assert.strictEqual(turnPosition([{ speaker: 'user', text: '问题' }], 'claude'), 'first');
+  assert.strictEqual(turnPosition(msgs, 'gemini'), 'later');
+  assert.strictEqual(turnPosition(msgs, 'claude'), 'again');
+  assert.strictEqual(turnPosition([{ speaker: 'user', text: '问题' }, { speaker: 'system', text: '提示' }], 'gpt'), 'first', '系统提示不算发言');
+  assert.strictEqual(turnPosition([...msgs, { speaker: 'user', text: '第二个问题' }], 'claude'), 'first', '新消息之后重新算');
+  assert.strictEqual(turnPosition([], 'claude'), 'first');
+});
+
+test('人设：自由讨论和辩论按轮到时的情况写规则，后说的人先说自己的看法；其他情况不变', () => {
+  const base = { speaker: 'gemini', members: ['claude', 'gemini', 'gpt'], length: 'short' };
+  const OLD = '先看清楚前面每个人说了什么再接话';
+  const first = buildSystemPrompt({ ...base, mode: 'discuss', position: 'first' });
+  assert(first.includes('由你第一个回答') && !first.includes(OLD) && !first.includes('然后再接别人的话'));
+  const later = buildSystemPrompt({ ...base, mode: 'debate', position: 'later' });
+  assert(later.includes('先用一两句话说出你自己的看法') && later.includes('然后再接别人的话') && !later.includes(OLD));
+  // 这条消息已经回答过（多轮、继续聊），或者没说明情况：原来的写法
+  const again = buildSystemPrompt({ ...base, mode: 'discuss', position: 'again' });
+  assert(again.includes(OLD));
+  assert(buildSystemPrompt({ ...base, mode: 'discuss' }).includes(OLD));
+  // 合作和各自回答不看这个
+  for (const mode of ['collab', 'independent']) {
+    for (const position of ['first', 'later', 'again']) assert(buildSystemPrompt({ ...base, mode, position }).includes(OLD), `${mode} ${position}`);
+  }
+  for (const p of [first, later, again]) {
+    assert.deepStrictEqual(p.split('\n').filter((l) => /^\d\. /.test(l)).map((l) => l[0]), ['1', '2', '3', '4', '5', '6', '7'], '规则还是 1 到 7 条');
+  }
+
+  const i18n = require('../lib/i18n');
+  i18n.setLang('en');
+  try {
+    const en = buildSystemPrompt({ ...base, mode: 'discuss', position: 'later' });
+    assert(en.includes('Start with your own view in one or two sentences') && en.includes('Then respond to the others'));
+    assert(!/[一-鿿]/.test(en), '英文人设里不应该有中文');
+    const enFirst = buildSystemPrompt({ ...base, mode: 'debate', position: 'first' });
+    assert(enFirst.includes("You are the first to answer the host's latest message") && !/[一-鿿]/.test(enFirst));
+    assert(buildSystemPrompt({ ...base, mode: 'collab', position: 'later' }).includes('Read what everyone said before you reply'));
+  } finally {
+    i18n.setLang('zh');
+  }
+});
+
+test('配置：“每条消息换一个发言顺序”默认打开，以前的配置升级后也是；关掉后保持关掉', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const { ConfigStore } = require('../lib/store');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rt-cfg-'));
+
+  assert.strictEqual(new ConfigStore(path.join(dir, 'new.json')).get().shuffleOrder, true);
+
+  // 1.0.2 的配置：没有这个选项，有旧的“每次换一位成员先发言”
+  const old = path.join(dir, 'old.json');
+  fs.writeFileSync(old, JSON.stringify({ version: 2, rotateFirst: true, order: ['gpt', 'claude', 'gemini'] }));
+  const store = new ConfigStore(old);
+  assert.strictEqual(store.get().shuffleOrder, true);
+  assert.ok(!('rotateFirst' in JSON.parse(fs.readFileSync(old, 'utf8'))), '旧选项不再保留');
+  assert.deepStrictEqual(store.get().order, ['gpt', 'claude', 'gemini'], '排好的顺序还在（合作模式、关掉换顺序时用）');
+
+  store.update({ shuffleOrder: false });
+  assert.strictEqual(new ConfigStore(old).get().shuffleOrder, false);
+});
+
 test('配置升级：1.0.0 默认的 GitHub Models 自动换成 Codex；新装默认 Codex；明确选过的保持不变', () => {
   const fs = require('fs');
   const os = require('os');

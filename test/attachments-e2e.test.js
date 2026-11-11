@@ -54,8 +54,10 @@ before(async () => {
   app = createAppServer({ dataDir, publicDir: path.join(ROOT, 'public') });
   await app.listen(0);
   c = client(app.port);
+  // 默认每条消息会换一个发言顺序；这里关掉，下面的测试按固定的顺序检查（换顺序的测试在 e2e.test.js 里）
   const r = await c.post('/api/config', {
     lang: 'zh',
+    shuffleOrder: false,
     members: {
       gpt: { 'github-models': { token: 'good-token', baseUrl: `http://127.0.0.1:${api.port}/inference` } },
       gemini: { 'gemini-api': { apiKey: 'good-key', baseUrl: `http://127.0.0.1:${api.port}` } },
@@ -215,6 +217,27 @@ test('附件在后面的发言里一直带着；没有附件的对话和以前�
   );
   const cx = parseInfo(last(s, 'gpt').text, 'MOCK-CODEX');
   assert.deepStrictEqual({ images: cx.images, files: cx.files }, { images: undefined, files: undefined });
+});
+
+test('各自回答时带附件：三位同时回答，每一位都拿到了附件', async () => {
+  await c.post('/api/new');
+  const img = await upload('截图.png', PNG);
+  const scan = await upload('scan.pdf', SCAN);
+  const s = await sendAndWait(c, { text: '各自看看这两个附件', attachments: [img.id, scan.id], mode: 'independent', rounds: 1 });
+  assert.deepStrictEqual(aiMessages(s).map((m) => m.speaker).sort(), ['claude', 'gemini', 'gpt']);
+  assert.deepStrictEqual(s.messages.filter((m) => m.speaker === 'system'), [], JSON.stringify(s.messages));
+  for (const m of aiMessages(s)) assert.strictEqual(m.meta.note, '', `${m.speaker}: ${m.meta.note}`);
+
+  const sizes = [PNG.length, SCAN.length];
+  const cl = parseInfo(last(s, 'claude').text, 'MOCK-CLAUDE');
+  const ag = parseInfo(last(s, 'gemini').text, 'MOCK-AGY');
+  const cx = parseInfo(last(s, 'gpt').text, 'MOCK-CODEX');
+  assert.deepStrictEqual(cl.files.map((f) => f.size), sizes, 'Claude');
+  assert.deepStrictEqual(ag.files.map((f) => f.size), sizes, 'Antigravity');
+  assert.deepStrictEqual(cx.images.map((f) => f.size), [PNG.length], 'Codex 的 --image');
+  assert.deepStrictEqual(cx.files.map((f) => f.size), sizes, 'Codex');
+  // 同时回答：每一位的聊天记录里只有主持人这一条，看不到别人这一轮的回答
+  assert.deepStrictEqual([cl.blocks, ag.blocks, cx.blocks], [1, 1, 1]);
 });
 
 test('只发附件不写字也可以；标题、导出和历史记录里都有附件', async () => {

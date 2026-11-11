@@ -101,6 +101,27 @@ function client(port) {
   };
 }
 
+// 像网页一样连上 /api/events，把推送过来的事件按顺序记下来：[{ event, data }]。用完要 close()
+function listen(port) {
+  const events = [];
+  let buf = '';
+  const req = http.get({ host: '127.0.0.1', port, path: '/api/events', headers: { Host: `127.0.0.1:${port}` } }, (res) => {
+    res.setEncoding('utf8');
+    res.on('data', (chunk) => {
+      buf += chunk;
+      for (let i = buf.indexOf('\n\n'); i >= 0; i = buf.indexOf('\n\n')) {
+        const frame = buf.slice(0, i);
+        buf = buf.slice(i + 2);
+        const event = /^event: (.*)$/m.exec(frame);
+        const data = /^data: (.*)$/m.exec(frame);
+        if (event && data) events.push({ event: event[1], data: JSON.parse(data[1]) });
+      }
+    });
+  });
+  req.on('error', () => {});
+  return { events, close: () => req.destroy() };
+}
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function waitFor(fn, { timeout = 30000, interval = 100, label = 'condition' } = {}) {
@@ -143,6 +164,7 @@ module.exports = {
   makeMockBins,
   request,
   client,
+  listen,
   sleep,
   waitFor,
   sendAndWait,
