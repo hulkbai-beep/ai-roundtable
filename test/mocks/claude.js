@@ -11,6 +11,10 @@ if (process.env.MOCK_OLD_CLAUDE && args.includes('--effort')) {
   console.error("error: unknown option '--effort'");
   process.exit(1);
 }
+if (process.env.MOCK_OLD_CLAUDE && args.includes('--permission-mode')) {
+  console.error("error: unknown option '--permission-mode'");
+  process.exit(1);
+}
 const argAfter = (flag) => (args.includes(flag) ? args[args.indexOf(flag) + 1] : undefined);
 // 提示词末尾列出的附件文件（“- 附件 1（a.png）：路径”），以及按这个路径是不是真的读得到（size 是文件大小，读不到是 -1）
 function listedFiles(prompt) {
@@ -48,6 +52,7 @@ process.stdin.on('end', () => {
     systemLines: sys >= 0 ? args[sys + 1].split('\n').length : 0,
     toolsDisabled: tools >= 0 && args[tools + 1] === '',
     tools: tools >= 0 ? args[tools + 1] : undefined,
+    permissionMode: argAfter('--permission-mode'),
     filesRule: sys >= 0 && args[sys + 1].includes('除了查看主持人发来的附件') ? true : undefined,
     files: listedFiles(input),
     attachments: (input.match(/^<附件 编号="\d+"/gm) || []).length || undefined,

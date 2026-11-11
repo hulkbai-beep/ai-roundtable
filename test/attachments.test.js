@@ -8,6 +8,7 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
+const { spawnSync } = require('child_process');
 const { setLang } = require('../lib/i18n');
 setLang('zh'); // 下面的断言默认按中文写，英文的地方会临时切换
 const { openZip, officeKind, officeText, docxText, xlsxText, pptxText, decodeText, decodeXml, MAX_TEXT } = require('../lib/doc-text');
@@ -115,6 +116,112 @@ test('Word：表格每行一行，单元格之间用制表符隔开', () => {
   assert.strictEqual(docxText(openZip(makeDocx(body, { styles: DOCX_STYLES }))), ['表格前', '姓名\t备注\t分数', '王芳\t第一段 第二段 换行 制表\t90', '李雷', '表格后'].join('\n'));
 });
 
+test('Word：脚注、尾注、批注附在最后；不断行的连字符、公式、符号都留着；挪走的文字只算新位置上的那一份', () => {
+  const body = [
+    '<w:p><w:r><w:t>营收增长 18%</w:t></w:r><w:r><w:footnoteReference w:id="2"/></w:r><w:r><w:t>，利润持平</w:t></w:r><w:r><w:endnoteReference w:id="1"/></w:r><w:r><w:t>。</w:t></w:r></w:p>',
+    '<w:p><w:commentRangeStart w:id="0"/><w:r><w:t>待确认的一段</w:t></w:r><w:commentRangeEnd w:id="0"/><w:r><w:commentReference w:id="0"/></w:r></w:p>',
+    // 不断行的连字符漏掉的话，555-0199 就成了 5550199
+    '<w:p><w:r><w:t>电话 555</w:t><w:noBreakHyphen/><w:t>0199，2024</w:t><w:noBreakHyphen/><w:t>2025 年</w:t></w:r></w:p>',
+    '<w:p><w:r><w:t xml:space="preserve">毛利率 </w:t></w:r><m:oMath><m:r><m:t>m=(p-c)/p</m:t></m:r></m:oMath><w:r><w:t xml:space="preserve"> 完成 </w:t></w:r><w:r><w:sym w:font="Wingdings" w:char="F0FC"/></w:r><w:r><w:sym w:font="Symbol" w:char="F061"/></w:r><w:r><w:sym w:font="Arial" w:char="00B1"/></w:r></w:p>',
+    // 修订里挪动过的一句话：原来的位置（moveFrom）和新位置（moveTo）各存了一份
+    '<w:p><w:r><w:t xml:space="preserve">第一节。</w:t></w:r><w:moveFrom w:id="5" w:author="A"><w:r><w:t>周五截止。</w:t></w:r></w:moveFrom></w:p>',
+    '<w:p><w:r><w:t xml:space="preserve">第二节。</w:t></w:r><w:moveTo w:id="6" w:author="A"><w:r><w:t>周五截止。</w:t></w:r></w:moveTo></w:p>',
+  ].join('');
+  const parts = {
+    // 第一条是分隔线，第三条正文里没有提到：都不要
+    footnotes:
+      '<w:footnote w:type="separator" w:id="0"><w:p><w:r><w:separator/></w:r></w:p></w:footnote>' +
+      '<w:footnote w:id="2"><w:p><w:r><w:footnoteRef/></w:r><w:r><w:t xml:space="preserve"> 不含一次性收入。</w:t></w:r></w:p></w:footnote>' +
+      '<w:footnote w:id="3"><w:p><w:r><w:t>正文没有提到的脚注</w:t></w:r></w:p></w:footnote>',
+    endnotes: '<w:endnote w:id="1"><w:p><w:r><w:endnoteRef/></w:r><w:r><w:tab/><w:t>经审计。</w:t></w:r></w:p></w:endnote>',
+    comments: '<w:comment w:id="0" w:author="王芳" w:date="2024-01-01T00:00:00Z"><w:p><w:r><w:t>请再核对一下</w:t></w:r></w:p></w:comment>',
+  };
+  assert.strictEqual(
+    docxText(openZip(makeDocx(body, { parts }))),
+    ['营收增长 18%[^1]，利润持平[^e1]。', '待确认的一段[^c1]', '电话 555-0199，2024-2025 年', '毛利率 m=(p-c)/p 完成 ✓α±', '第一节。', '第二节。周五截止。', '', '[^1] 不含一次性收入。', '[^e1] 经审计。', '[^c1] 王芳: 请再核对一下'].join('\n')
+  );
+  // 正文里没有记号的话，后面什么都不加
+  assert.strictEqual(docxText(openZip(makeDocx(para('没有脚注'), { parts }))), '没有脚注');
+});
+
+test('Word：标签的前缀换了别的写法（ns0:p）也能读', () => {
+  // 前缀可以随便起，认的是它对应的命名空间。Python 的 ElementTree 存出来就是 ns0、ns1
+  const ns = 'xmlns:ns0="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
+  const odd = makeZip({
+    'word/document.xml': `<ns0:document ${ns}><ns0:body><ns0:p><ns0:pPr><ns0:pStyle ns0:val="Heading1"/></ns0:pPr><ns0:r><ns0:t>换了前缀</ns0:t></ns0:r></ns0:p><ns0:p><ns0:r><ns0:t>也能读</ns0:t><ns0:tab/><ns0:t>制表</ns0:t></ns0:r></ns0:p></ns0:body></ns0:document>`,
+    'word/styles.xml': `<ns0:styles ${ns}><ns0:style ns0:type="paragraph" ns0:styleId="Heading1"><ns0:name ns0:val="heading 1"/></ns0:style></ns0:styles>`,
+  });
+  assert.strictEqual(docxText(openZip(odd)), '# 换了前缀\n也能读\t制表');
+  // 声明了几百个前缀的文件：每种命名空间只换一个前缀，不会把整份内容过几百遍
+  const many = Array.from({ length: 200 }, (_, i) => `xmlns:p${i}="http://schemas.openxmlformats.org/wordprocessingml/2006/main"`).join(' ');
+  const big = makeZip({ 'word/document.xml': `<p0:document ${many}><p0:body>${'<p0:p><p0:r><p0:t>x</p0:t></p0:r></p0:p>'.repeat(BAD)}</p0:body></p0:document>` });
+  assert.ok(quick('很多前缀', () => docxText(openZip(big))).startsWith('x\nx\n'));
+});
+
+test('标签前缀是在解码之前、直接在字节上换的：长的、短的、去掉的、变长的都对，别的地方不动', () => {
+  const uri = 'http://example.com/ns';
+  const text = (xml, want) => openZip(makeZip({ 'a.xml': xml })).text('a.xml', want);
+  const body = '<ns0:b ns0:val="1">中文 ns0: 1 < 2 <ns0:br/></ns0:b><other:x/></ns0:a><';
+  // 换短（ns0 → w）：开始、结束、自己结束的标签都换；属性上的前缀、文字里的“ns0:”、别的前缀不动
+  assert.strictEqual(text(`<ns0:a xmlns:ns0="${uri}">${body}`, { w: [uri] }), `<w:a xmlns:ns0="${uri}">${body.replaceAll('<ns0:', '<w:').replaceAll('</ns0:', '</w:')}`);
+  // 去掉前缀（表格里通常不带前缀）
+  assert.strictEqual(text(`<x:row xmlns:x='${uri}'><x:c/></x:row>`, { '': [uri] }), `<row xmlns:x='${uri}'><c/></row>`);
+  // 换长（现在用不到，以后加了两个字母的前缀也不会写出界）
+  assert.strictEqual(text(`<a:p xmlns:a="${uri}">${'<a:r/>'.repeat(1000)}</a:p>`, { wide: [uri] }), `<wide:p xmlns:a="${uri}">${'<wide:r/>'.repeat(1000)}</wide:p>`);
+  // 已经是通常的写法、命名空间对不上、没给 want：原样
+  for (const [xml, want] of [[`<w:a xmlns:w="${uri}"/>`, { w: [uri] }], [`<q:a xmlns:q="http://example.com/other"/>`, { w: [uri] }], [`<q:a xmlns:q="${uri}"/>`, undefined]]) {
+    assert.strictEqual(text(xml, want), xml);
+  }
+});
+
+test('很小的文件解开以后特别费内存的两种情况：放在限制了内存的子进程里也读得完', () => {
+  // 两个文件压缩以后都只有 100 KB 上下，document.xml 解开是 32 MB：
+  // 1. 两百多万个标签都用 p0: 这种前缀，全都要换（解码以后再用 replaceAll 换的写法会因为内存不够直接退出）
+  // 2. 一段文字是六百多万个 &amp;（用“正则 + 回调”来解的写法会占掉 1 GB 以上，同样直接退出）
+  const script = `
+    const { makeZip, makeDocx } = require(${JSON.stringify(path.join(__dirname, 'files'))});
+    const { inspect } = require(${JSON.stringify(path.join(__dirname, '..', 'lib', 'attachments'))});
+    const size = 32 * 1024 * 1024;
+    const ns = 'xmlns:p0="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
+    const para = '<p0:p><p0:r><p0:t>x</p0:t></p0:r></p0:p>';
+    const files = [
+      makeZip({ 'word/document.xml': '<p0:document ' + ns + '><p0:body>' + para.repeat(Math.floor(size / para.length)) + '</p0:body></p0:document>' }),
+      makeDocx('<w:p><w:r><w:t>' + '&amp;'.repeat(Math.floor(size / 5)) + '</w:t></w:r></w:p>'),
+    ];
+    for (const zip of files) {
+      const r = inspect(zip, 'big.docx');
+      console.log(zip.length < 1024 * 1024, r.text.length, JSON.stringify(r.text.slice(0, 3)), r.partial);
+    }
+  `;
+  const r = spawnSync(process.execPath, ['--max-old-space-size=160', '-e', script], { encoding: 'utf8', timeout: 120000 });
+  assert.strictEqual(r.status, 0, String(r.stderr).slice(0, 300));
+  assert.deepStrictEqual(r.stdout.trim().split(/\r?\n/), [`true ${MAX_TEXT - 1} "x\\nx" true`, `true ${MAX_TEXT} "&&&" true`]);
+});
+
+test('Word：页眉、页脚各写一遍，只有页码的不要', () => {
+  const type = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/';
+  const rel = (id, kind, target) => `<Relationship Id="${id}" Type="${type}${kind}" Target="${target}"/>`;
+  const pageNumber = '<w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText> PAGE </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>1</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r>';
+  const files = {
+    'word/_rels/document.xml.rels': `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${[
+      rel('rId1', 'styles', 'styles.xml'),
+      rel('rId2', 'footer', 'footer2.xml'),
+      rel('rId3', 'header', 'header1.xml'),
+      rel('rId4', 'header', 'header2.xml'),
+      rel('rId5', 'footer', 'footer1.xml'),
+    ].join('')}</Relationships>`,
+    'word/header1.xml': '<w:hdr><w:p><w:r><w:t>ACME 公司</w:t><w:tab/><w:t>内部资料</w:t></w:r></w:p></w:hdr>',
+    'word/header2.xml': '<w:hdr><w:p><w:r><w:t>ACME 公司</w:t><w:tab/><w:t>内部资料</w:t></w:r></w:p></w:hdr>', // 首页的页眉，内容一样
+    'word/footer1.xml': `<w:ftr><w:p>${pageNumber}</w:p></w:ftr>`,
+    'word/footer2.xml': `<w:ftr><w:p><w:r><w:t xml:space="preserve">版本 2.1，第 </w:t></w:r>${pageNumber}<w:r><w:t xml:space="preserve"> 页</w:t></w:r></w:p><w:p><w:r><w:t>请勿外传</w:t></w:r></w:p></w:ftr>`,
+    'word/header9.xml': '<w:hdr><w:p><w:r><w:t>没有用到的页眉</w:t></w:r></w:p></w:hdr>',
+  };
+  const body = '<w:p><w:r><w:t>正文</w:t></w:r><w:r><w:footnoteReference w:id="2"/></w:r></w:p>';
+  const buf = makeDocx(body, { files, parts: { footnotes: '<w:footnote w:id="2"><w:p><w:r><w:t>脚注</w:t></w:r></w:p></w:footnote>' } });
+  assert.strictEqual(docxText(openZip(buf)), ['正文[^1]', '', '页眉：ACME 公司\t内部资料', '页脚：版本 2.1，第 1 页 / 请勿外传', '', '[^1] 脚注'].join('\n'));
+  assert.ok(inEnglish(() => inspect(buf, 'a.docx')).text.includes('\nHeader: ACME 公司\t内部资料\nFooter: 版本 2.1'));
+});
+
 test('Word：没有样式文件也能读；缺正文时报错', () => {
   assert.strictEqual(docxText(openZip(makeDocx(para('只有一段', 'Heading1')))), '只有一段');
   assert.throws(() => docxText(openZip(makeZip({ 'word/other.xml': '<x/>' }))), /document\.xml is missing/);
@@ -190,6 +297,71 @@ test('Excel：1904 日期系统、没有关系文件时按文件名找工作表'
   assert.throws(() => xlsxText(openZip(makeZip({ 'xl/styles.xml': '<x/>' }))), /workbook\.xml is missing/);
 });
 
+test('Excel：百分比、累计的时长照表格里显示的样子写；带下划线的会计格式不会被当成日期', () => {
+  const styles =
+    '<numFmts count="5">' +
+    '<numFmt numFmtId="164" formatCode="[h]:mm"/>' +
+    // 德文的会计格式：_D、_M 是“留出一个 D（M）那么宽的空”，不是“日”“月”
+    '<numFmt numFmtId="165" formatCode="_-* #,##0.00\\ _D_M_-;\\-* #,##0.00\\ _D_M_-"/>' +
+    '<numFmt numFmtId="166" formatCode="0.0%"/>' +
+    '<numFmt numFmtId="167" formatCode="[mm]:ss"/>' +
+    '<numFmt numFmtId="168" formatCode="[$-409]d\\-mmm\\-yy;@"/>' +
+    '</numFmts>' +
+    // 样式 0～7：常规、自带的百分比、自定义的百分比、[h]:mm、会计格式、[mm]:ss、自带的 [h]:mm:ss、带地区代码的日期
+    '<cellXfs count="8"><xf numFmtId="0"/><xf numFmtId="9"/><xf numFmtId="166"/><xf numFmtId="164"/><xf numFmtId="165"/><xf numFmtId="167"/><xf numFmtId="46"/><xf numFmtId="168"/></cellXfs>';
+  const rows = [
+    // Excel 自己存小数时常常写成 7.0000000000000007E-2 这样
+    '<row r="1"><c r="A1" s="1"><v>0.18</v></c><c r="B1" s="2"><v>7.4999999999999997E-2</v></c><c r="C1" s="1"><v>7.0000000000000007E-2</v></c><c r="D1" s="1"><v>1.5</v></c></row>',
+    '<row r="2"><c r="A2" s="3"><v>1.5625</v></c><c r="B2" s="5"><v>0.0625</v></c><c r="C2" s="6"><v>1.5625</v></c><c r="D2" s="3"><v>-0.25</v></c></row>',
+    '<row r="3"><c r="A3" s="4"><v>1.5</v></c><c r="B3" s="4"><v>45000.25</v></c><c r="C3" s="7"><v>45000</v></c></row>',
+    // 没有格式的数：文件里带的一点点误差去掉，写成指数的也一样
+    '<row r="4"><c r="A4"><v>4.2000000000000003E-2</v></c><c r="B4"><v>0.30000000000000004</v></c><c r="C4"><v>1.5E-3</v></c><c r="D4"><v>123456789012345</v></c></row>',
+  ].join('');
+  assert.strictEqual(
+    xlsxText(openZip(makeXlsx([{ name: 'S', file: 'sheet1.xml', rows }], { styles }))),
+    ['--- S ---', '18%\t7.5%\t7%\t150%', '37:30\t90:00\t37:30:00\t-6:00', '1.5\t45000.25\t2023-03-15', '0.042\t0.3\t0.0015\t123456789012345'].join('\n')
+  );
+});
+
+test('Excel：标签带前缀的文件、隐藏的工作表、1900 年初的日期、文字里的 _x000D_、特别宽的行', () => {
+  // .NET 的一些库（ClosedXML、Open XML SDK）存出来的文件，标签全都带 x: 前缀
+  const ns = 'xmlns:x="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"';
+  const prefixed = makeZip({
+    'xl/workbook.xml': `<x:workbook ${ns}><x:sheets><x:sheet name="报表" sheetId="1" r:id="rId1"/><x:sheet name="底稿" sheetId="2" state="hidden" r:id="rId2"/></x:sheets></x:workbook>`,
+    'xl/_rels/workbook.xml.rels':
+      '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="t" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="t" Target="worksheets/sheet2.xml"/></Relationships>',
+    'xl/sharedStrings.xml': `<x:sst ${ns}><x:si><x:t>品名</x:t></x:si><x:si><x:t>螺栓</x:t></x:si></x:sst>`,
+    'xl/styles.xml': `<x:styleSheet ${ns}><x:cellXfs count="2"><x:xf numFmtId="0"/><x:xf numFmtId="14"/></x:cellXfs></x:styleSheet>`,
+    'xl/worksheets/sheet1.xml': `<x:worksheet ${ns}><x:sheetData><x:row r="1"><x:c r="A1" t="s"><x:v>0</x:v></x:c><x:c r="B1" t="inlineStr"><x:is><x:t>数量</x:t></x:is></x:c></x:row><x:row r="2"><x:c r="A2" t="s"><x:v>1</x:v></x:c><x:c r="B2"><x:v>12</x:v></x:c><x:c r="C2" s="1"><x:v>45000</x:v></x:c></x:row></x:sheetData></x:worksheet>`,
+    'xl/worksheets/sheet2.xml': `<x:worksheet ${ns}><x:sheetData><x:row r="1"><x:c r="A1" t="inlineStr"><x:is><x:t>内部数字</x:t></x:is></x:c></x:row></x:sheetData></x:worksheet>`,
+  });
+  assert.strictEqual(xlsxText(openZip(prefixed)), ['--- 报表 ---', '品名\t数量', '螺栓\t12\t2023-03-15', '', '--- 底稿（隐藏） ---', '内部数字'].join('\n'));
+  assert.ok(inEnglish(() => inspect(prefixed, 'a.xlsx')).text.includes('--- 底稿 (hidden) ---'));
+
+  // Excel 以为 1900 年有 2 月 29 日（第 60 天）：这一天之前的日期要往后挪一天
+  const dates = '<row><c s="1"><v>1</v></c><c s="1"><v>15</v></c><c s="1"><v>59</v></c><c s="1"><v>60</v></c><c s="1"><v>61</v></c></row>';
+  assert.strictEqual(xlsxText(openZip(makeXlsx([{ name: 'D', file: 'sheet1.xml', rows: dates }], { styles: XLSX_STYLES }))), '--- D ---\n1900-01-01\t1900-01-15\t1900-02-28\t1900-02-29\t1900-03-01');
+
+  // 文字里的 _x000D_ 是一个回车，_x005F_ 是下划线本身
+  const escaped = makeXlsx([{ name: 'T', file: 'sheet1.xml', rows: '<row><c t="s"><v>0</v></c><c t="str"><f>A1</f><v>公式的结果_x000A_第二行</v></c></row>' }], {
+    sharedStrings: '<si><t>第一行_x000D_\n第二行 a_x005F_x000D_b</t></si>',
+  });
+  assert.strictEqual(xlsxText(openZip(escaped)), '--- T ---\n第一行 第二行 a_x000D_b\t公式的结果 第二行');
+
+  // 第 2000 列以后的不要，要标成“没有读全”；后面的行、后面的工作表照常读
+  const info = {};
+  const wide = makeXlsx([
+    { name: '宽', file: 'sheet1.xml', rows: '<row><c r="A1"><v>1</v></c><c r="BXY1"><v>2</v></c></row><row><c r="A2"><v>3</v></c></row>' },
+    { name: '后面', file: 'sheet2.xml', rows: '<row><c><v>9</v></c></row>' },
+  ]);
+  assert.strictEqual(xlsxText(openZip(wide), info), '--- 宽 ---\n1\n3\n\n--- 后面 ---\n9');
+  assert.strictEqual(info.truncated, true);
+
+  // 一个单元格都没有的表格、每一页都只有图片的幻灯片：算“没有文字”，不留下光秃秃的小标题
+  assert.throws(() => inspect(makeXlsx([{ name: 'S', file: 'sheet1.xml', rows: '' }]), 'empty.xlsx'), /没有找到文字/);
+  assert.throws(() => inspect(makePptx([{ file: 'slide1.xml', body: '<p:pic/>' }]), 'photos.pptx'), /没有找到文字/);
+});
+
 // ---------- PowerPoint ----------
 
 const shape = (...paras) => `<p:sp><p:txBody><a:bodyPr/>${paras.join('')}</p:txBody></p:sp>`;
@@ -208,6 +380,23 @@ test('PowerPoint：按放映顺序逐页列出文字，表格用制表符隔开'
   assert.strictEqual(pptxText(openZip(buf)), ['--- 1 ---', '封面 & 标题', '第一行', '第二行', '', '--- 2 ---', '指标\t目标', 'DAU\t10 万', 'Split run'].join('\n'));
   assert.strictEqual(officeKind(openZip(buf)), 'pptx');
   assert.strictEqual(officeText(openZip(buf), 'pptx'), pptxText(openZip(buf)));
+});
+
+test('PowerPoint：演讲者备注跟在那一页后面；隐藏的幻灯片标出来；页码不算内容', () => {
+  const holder = (type, inner = '') => `<p:sp><p:nvSpPr><p:cNvPr id="2" name="x"/><p:nvPr><p:ph type="${type}"/></p:nvPr></p:nvSpPr>${inner ? `<p:txBody><a:bodyPr/>${inner}</p:txBody>` : ''}</p:sp>`;
+  const number = (n) => holder('sldNum', `<a:p><a:fld type="slidenum"><a:t>${n}</a:t></a:fld></a:p>`);
+  // 备注页上有幻灯片的缩略图、备注正文、页码
+  const notesPage = (...paras) => holder('sldImg') + holder('body', paras.join('')) + number(1);
+  const buf = makePptx([
+    { file: 'slide1.xml', body: shape(aPara('预算')) + number(7), notes: notesPage(aPara('实际数字要低 40%。'), aPara('先别对外说。')) },
+    { file: 'slide2.xml', body: shape(aPara('备用页')), hidden: true, notes: notesPage('<a:p><a:endParaRPr lang="zh-CN"/></a:p>') },
+    { file: 'slide3.xml', body: shape(aPara('结束')) },
+  ]);
+  assert.strictEqual(pptxText(openZip(buf)), ['--- 1 ---', '预算', '', '备注：', '实际数字要低 40%。', '先别对外说。', '', '--- 2（隐藏） ---', '备用页', '', '--- 3 ---', '结束'].join('\n'));
+  // 这两个小标题跟着界面语言走
+  const en = inEnglish(() => inspect(buf, 'a.pptx')).text;
+  assert.ok(en.startsWith('--- 1 ---\n预算\n\nSpeaker notes:\n实际数字要低 40%。') && en.includes('\n--- 2 (hidden) ---\n'), en);
+  assert.ok(inspect(buf, 'a.pptx').text.includes('\n备注：\n'));
 });
 
 test('PowerPoint：没有顺序信息时按文件名里的数字排', () => {
@@ -290,13 +479,19 @@ test('纯文本：二进制文件认不出来，特别长的只留开头', () =>
 test('XML 转义字符', () => {
   assert.strictEqual(decodeXml('a &amp; b &lt;c&gt; &quot;d&quot; &apos;e&apos; &#20013;&#x6587; &#x1F600;'), 'a & b <c> "d" \'e\' 中文 😀');
   assert.strictEqual(decodeXml('&unknown; &#xFFFFFFFF; &amp;amp;'), '&unknown;  &amp;');
+  // 不是这种写法的 & 原样留着；对象上本来就有的名字（constructor 之类）不算
+  assert.strictEqual(decodeXml('&; &#; &#x; &#X41; &amp &#123456789; &constructor; a&&lt;b'), '&; &#; &#x; &#X41; &amp &#123456789; &constructor; a&<b');
+  // 解出 max 个字就停：结果是完整结果的开头，并且不短于 max（调用的地方靠这一点知道没放全）
+  assert.strictEqual(decodeXml('a&lt;b&gt;c&amp;d', 3), 'a<b>');
+  const cut = decodeXml(`${'a&amp;'.repeat(MAX_TEXT)}尾巴`);
+  assert.ok(cut.length > MAX_TEXT && cut.length < MAX_TEXT + 8 && /^(a&)+$/.test(cut), String(cut.length));
 });
 
 // ---------- PDF（现做的小文件） ----------
 
 test('PDF：最简单的文字指令（Tj、TJ、换行、转义、八进制）', () => {
   const r = pdfText(textPdf(['BT /F1 12 Tf 72 720 Td (Hello, world!) Tj 0 -16 Td [(Sec) -20 (ond) -300 (line)] TJ ET']));
-  assert.deepStrictEqual(r, { text: 'Hello, world!\nSecond line', pages: 1, objects: 5, encrypted: false, truncated: false, coverage: 1 });
+  assert.deepStrictEqual(r, { text: 'Hello, world!\nSecond line', pages: 1, objects: 5, encrypted: false, truncated: false, coverage: 1, scanned: 0 });
   const escapes = "BT /F1 12 Tf 14 TL 72 720 Td (Parens \\(a\\) and backslash \\\\ and octal \\101\\102) Tj T* (next) Tj (quote line) ' 1 2 (dq line) \" ET";
   assert.strictEqual(pdfText(textPdf([escapes])).text, 'Parens (a) and backslash \\ and octal AB\nnext\nquote line\ndq line');
 });
@@ -351,7 +546,7 @@ test('PDF：中文等内嵌字体靠 ToUnicode 表把编号换成文字', () => 
     stream: (d) => ({ dict: '/Filter /FlateDecode', stream: deflate(d) }),
     more: [{ dict: '/Filter /FlateDecode', stream: deflate(TO_UNICODE) }, '<< /Type /FontDescriptor /FontName /AAAAAA+Test /Flags 4 >>', CID_FONT(7)],
   });
-  assert.deepStrictEqual(pdfText(pdf), { text: '你好世界😀\nABC', pages: 1, objects: 8, encrypted: false, truncated: false, coverage: 1 });
+  assert.deepStrictEqual(pdfText(pdf), { text: '你好世界😀\nABC', pages: 1, objects: 8, encrypted: false, truncated: false, coverage: 1, scanned: 0 });
   assert.deepStrictEqual({ ...inspect(pdf, 'a.pdf'), text: undefined }, { kind: 'pdf', ext: 'pdf', mime: 'application/pdf', text: undefined, pages: 1, partial: true, encrypted: false }, '只有几个字：文件本身也要交给 AI');
 });
 
@@ -381,7 +576,7 @@ test('PDF：对象流（PDF 1.5 起很常见）里的对象也能找到', () => 
     packed,
     Buffer.from('\nendstream\nendobj\n7 0 obj\n<< /Type /XRef /Size 8 /Root 1 0 R /W [1 2 1] /Length 0 >>\nstream\n\nendstream\nendobj\nstartxref\n0\n%%EOF\n', 'latin1'),
   ]);
-  assert.deepStrictEqual(pdfText(pdf), { text: 'Inside an object stream', pages: 1, objects: 7, encrypted: false, truncated: false, coverage: 1 });
+  assert.deepStrictEqual(pdfText(pdf), { text: 'Inside an object stream', pages: 1, objects: 7, encrypted: false, truncated: false, coverage: 1, scanned: 0 });
 });
 
 test('PDF：多个内容流、继承来的字体、表单对象、内嵌图片', () => {
@@ -406,6 +601,7 @@ test('PDF：多页时标出页码；太长时截断', () => {
     encrypted: false,
     truncated: false,
     coverage: 1,
+    scanned: 0,
   });
   const long = Array.from({ length: 40 }, (_, i) => `BT /F1 12 Tf 72 ${720 - i * 14} Td (Line number ${i} of this page) Tj ET`).join('\n');
   const all = pdfText(textPdf([long, long, long]));
@@ -419,10 +615,10 @@ test('PDF：多页时标出页码；太长时截断', () => {
 });
 
 test('PDF：加密的、损坏的、根本不是 PDF 的内容都不会崩溃', () => {
-  assert.deepStrictEqual(pdfText(textPdf(['BT /F1 12 Tf 72 720 Td (Secret) Tj ET'], { trailer: '/Encrypt 99 0 R ' })), { text: '', pages: 0, objects: 5, encrypted: true, truncated: false, coverage: 0 });
+  assert.deepStrictEqual(pdfText(textPdf(['BT /F1 12 Tf 72 720 Td (Secret) Tj ET'], { trailer: '/Encrypt 99 0 R ' })), { text: '', pages: 0, objects: 5, encrypted: true, truncated: false, coverage: 0, scanned: 0 });
   const whole = textPdf(['BT /F1 12 Tf 72 720 Td (Cut off file) Tj ET']);
   assert.strictEqual(pdfText(whole.subarray(0, whole.length - 200)).text, 'Cut off file', '末尾的索引丢了也能读');
-  assert.deepStrictEqual(pdfText(Buffer.from('%PDF-1.4\n%%EOF')), { text: '', pages: 0, objects: 0, encrypted: false, truncated: false, coverage: 0 });
+  assert.deepStrictEqual(pdfText(Buffer.from('%PDF-1.4\n%%EOF')), { text: '', pages: 0, objects: 0, encrypted: false, truncated: false, coverage: 0, scanned: 0 });
   const noise = Buffer.alloc(20000);
   for (let i = 0; i < noise.length; i++) noise[i] = (i * 7919 + (i >> 3) * 31) & 0xff;
   assert.strictEqual(pdfText(Buffer.concat([Buffer.from('%PDF-1.7\n'), noise])).text, '');
@@ -460,9 +656,10 @@ test('Office：标签没写完、没有结束标签的文件很快读完，不�
     'docx 没写完的 <w:tab': [makeDocx(`${'<w:tab '.repeat(BAD)}>`), ''],
     'docx 没有结束的 <w:style>': [makeDocx(para('正文还在'), { styles: '<w:style w:styleId="a">'.repeat(BAD) }), '正文还在'],
     'docx 没有结束的 <mc:Fallback>': [makeDocx(`${para('前面的字')}${'<mc:Fallback>'.repeat(BAD)}`), '前面的字'],
-    'xlsx 没有结束的 <row>': [makeXlsx(sheet('<row>'.repeat(BAD))), '--- S ---'],
-    'xlsx 没有结束的 <c>': [makeXlsx(sheet(`<row>${'<c>'.repeat(BAD)}</row>`)), '--- S ---'],
-    'xlsx 没有结束的 <si>': [makeXlsx(sheet('<row><c t="s"><v>0</v></c></row>'), { sharedStrings: '<si>'.repeat(BAD) }), '--- S ---'],
+    // 一个单元格都没读到：不留一个光秃秃的工作表名字，算“没有文字”
+    'xlsx 没有结束的 <row>': [makeXlsx(sheet('<row>'.repeat(BAD))), ''],
+    'xlsx 没有结束的 <c>': [makeXlsx(sheet(`<row>${'<c>'.repeat(BAD)}</row>`)), ''],
+    'xlsx 没有结束的 <si>': [makeXlsx(sheet('<row><c t="s"><v>0</v></c></row>'), { sharedStrings: '<si>'.repeat(BAD) }), ''],
     'xlsx 没写完的 <Relationship': [
       makeZip({
         'xl/workbook.xml': '<workbook><sheets><sheet name="S" r:id="rId1"/></sheets></workbook>',
@@ -471,7 +668,7 @@ test('Office：标签没写完、没有结束标签的文件很快读完，不�
       }),
       '--- Sheet1 ---\n1',
     ],
-    'pptx 没有结束的 <a:t>': [makePptx([{ file: 'slide1.xml', body: '<a:t>'.repeat(BAD) }]), '--- 1 ---'],
+    'pptx 没有结束的 <a:t>': [makePptx([{ file: 'slide1.xml', body: '<a:t>'.repeat(BAD) }]), ''],
   };
   for (const [label, [buf, expected]] of Object.entries(cases)) {
     assert.ok(buf.length < 64 * 1024, `${label}：这样的文件压缩后很小（${buf.length} 字节）`);
@@ -571,7 +768,7 @@ test('PDF：同一个大内容流引用很多遍、解压后特别大的流，�
   assert.strictEqual(quick('两层压缩', () => pdfText(twice), 20000).truncated, true);
   // 正常大小的两层压缩不受影响
   const fine = textPdf(['BT /F1 12 Tf 72 720 Td (Twice packed) Tj ET'], { stream: (data) => ({ dict: '/Filter [/FlateDecode /ASCII85Decode]', stream: zlib.deflateSync(Buffer.from(ascii85(Buffer.from(data, 'latin1')), 'latin1')) }) });
-  assert.deepStrictEqual(pdfText(fine), { text: 'Twice packed', pages: 1, objects: 5, encrypted: false, truncated: false, coverage: 1 });
+  assert.deepStrictEqual(pdfText(fine), { text: 'Twice packed', pages: 1, objects: 5, encrypted: false, truncated: false, coverage: 1, scanned: 0 });
 });
 
 test('PDF：结构上的几种陷阱（trailer、对象流、一长串空格）都只扫一遍', () => {
@@ -733,6 +930,101 @@ test('Excel：一段很长的文字被几千个单元格引用，不会每个单
   assert.ok(text.startsWith(`--- S ---\n${'a'.repeat(999)} aaa`), text.slice(0, 40));
   assert.ok(text.length <= MAX_TEXT && text.length > MAX_TEXT - 100, `留下了 ${text.length} 字`);
   assert.strictEqual(info.truncated, true);
+});
+
+test('PDF：有的页有字、有的页是扫描的图片：图片页标出来，文件本身也交给 AI', () => {
+  const text = (s) => `BT /F1 12 Tf 72 720 Td (${s}) Tj ET`;
+  const picture = 'q 612 0 0 792 0 0 cm /Im1 Do Q'; // 一张图片铺满整页
+  // contents：每一页的内容流。字体是 /F1，图片是 /Im1，页面大小写在上一级
+  const build = (contents) => {
+    const first = 5;
+    const kids = contents.map((_, i) => `${first + i * 2} 0 R`).join(' ');
+    const objects = [
+      '<< /Type /Catalog /Pages 2 0 R >>',
+      `<< /Type /Pages /Kids [${kids}] /Count ${contents.length} /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> /XObject << /Im1 4 0 R >> >> >>`,
+      HELVETICA,
+      { dict: '/Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8', stream: 'x' },
+    ];
+    contents.forEach((c, i) => objects.push(`<< /Type /Page /Parent 2 0 R /Contents ${first + i * 2 + 1} 0 R >>`, { stream: c }));
+    return makePdf(objects);
+  };
+  const cover = text('Service agreement between Acme and Beta, signed copy attached.');
+  const logo = `q 60 0 0 30 40 740 cm /Im1 Do Q ${text('Appendix A lists the prices agreed for the first year.')}`; // 角上一个小图标：不算图片页
+  const stamped = `${picture} ${text('Scanned 3/4')}`; // 扫描软件在图片上加了几个字
+  const inline = 'q 612 0 0 792 0 0 cm BI /W 1 /H 1 /CS /G /BPC 8 ID x EI Q'; // 图片直接写在内容流里
+
+  const mixed = build([cover, picture, picture, stamped, logo, inline]);
+  const noted = pdfText(mixed, { imageNote: '（图片）' });
+  assert.strictEqual(
+    noted.text,
+    ['--- 1 ---', 'Service agreement between Acme and Beta, signed copy attached.', '', '--- 2-3 ---', '（图片）', '', '--- 4 ---', 'Scanned 3/4', '（图片）', '', '--- 5 ---', 'Appendix A lists the prices agreed for the first year.', '', '--- 6 ---', '（图片）'].join('\n')
+  );
+  assert.deepStrictEqual({ pages: noted.pages, scanned: noted.scanned, truncated: noted.truncated }, { pages: 6, scanned: 4, truncated: false });
+  // 不给说明的话，文字和以前一样，只是多了一个数
+  const plain = pdfText(mixed);
+  assert.ok(!plain.text.includes('图片') && plain.text.includes('--- 4 ---\nScanned 3/4\n\n--- 5 ---') && plain.scanned === 4);
+
+  // 图片页占了一大半：读出来的文字照样给，文件本身也交过去，并标成“不完整”
+  const info = inspect(mixed, 'contract.pdf');
+  assert.deepStrictEqual({ kind: info.kind, partial: info.partial, pages: info.pages }, { kind: 'pdf', partial: true, pages: 6 });
+  assert.ok(info.text.includes('--- 2-3 ---\n（图片，没有能读出来的文字）\n\n--- 4 ---\nScanned 3/4\n（图片，没有能读出来的文字）'), info.text);
+  assert.ok(inEnglish(() => inspect(mixed, 'contract.pdf')).text.includes('--- 2-3 ---\n(picture, no readable text)'));
+
+  // 十几页里只有一页是图片（比如封面）：还是按读得出来的文档算，只在那一页的位置注明
+  const report = inspect(build([picture, ...Array.from({ length: 11 }, (_, i) => text(`Page ${i + 2} of the report has an ordinary paragraph of text.`))]), 'report.pdf');
+  assert.deepStrictEqual({ kind: report.kind, partial: report.partial }, { kind: 'doc', partial: false });
+  assert.ok(report.text.startsWith('--- 1 ---\n（图片，没有能读出来的文字）\n\n--- 2 ---\nPage 2 of the report'));
+
+  // 整份都是图片：一个字都没有，不写说明（界面上会说“多半是扫描件”）
+  assert.deepStrictEqual(inspect(build([picture, inline]), 'scan.pdf'), { kind: 'pdf', ext: 'pdf', mime: 'application/pdf', text: '', pages: 2, partial: false, encrypted: false });
+  // 只有小图标、没有字的页不算图片页
+  assert.strictEqual(pdfText(build([cover, 'q 60 0 0 30 40 740 cm /Im1 Do Q']), { imageNote: '（图片）' }).scanned, 0);
+});
+
+test('PDF：希伯来文、阿拉伯文这些从右往左写的文字，转回阅读的顺序', () => {
+  // 字体的编号就是 Unicode；每行一段，照着“看上去从左到右”的顺序画（PDF 里就是这样存的）
+  const font = '<< /Type /Font /Subtype /Type0 /BaseFont /X /Encoding /Identity-H /ToUnicode 6 0 R >>';
+  const hex = (s) => Buffer.from(s, 'utf16le').swap16().toString('hex');
+  const page = (lines) => lines.map((s, i) => `BT /F1 12 Tf 72 ${760 - i * 20} Td <${hex(s)}> Tj ET`).join('\n');
+  const read = (lines, extra = '') => pdfText(textPdf([page(lines)], { font, more: [{ stream: `begincodespacerange <0000> <FFFF> endcodespacerange beginbfrange <0000> <FFFF> <0000> endbfrange ${extra}` }] })).text.split('\n');
+
+  // 左边是 Chrome 打印出来的 PDF 里实际存的样子，右边是原文。有数字、英文、括号、百分号、电话号码、网址，
+  // 最后四行是夹了几个词的英文句子
+  const chrome = [
+    ["ןחבמ הז םלוע םולש", "שלום עולם זה מבחן"],
+    ["2024 תנשב (מ\"עמ ללוכ) םילקש 1,234.50 אוה ריחמה", "המחיר הוא 1,234.50 שקלים (כולל מע\"מ) בשנת 2024"],
+    ["דקתשא 12.5% תמועל 18% לש החימצ", "צמיחה של 18% לעומת 12.5% אשתקד"],
+    ["2023 תנשל Acme Corp לש חודה תא ואר", "ראו את הדוח של Acme Corp לשנת 2023"],
+    ["info@example.com ל\"אוד ,03-555-0199 :ןופלט", "טלפון: 03-555-0199, דוא\"ל info@example.com"],
+    ["תולעמ 5- ל הדרי הרוטרפמטה", "הטמפרטורה ירדה ל -5 מעלות"],
+    ["45 דומע 12 ףיעס 3 קרפ", "פרק 3 סעיף 12 עמוד 45"],
+    ["ﻢﻟﺎﻌﻟﺎﺑ ﺎﺒﺣﺮﻣ", "مرحبا بالعالم"],
+    ["2024 مﺎﻋ ﻲﻓ (ﺔﺒﻳﺮﻀﻟا ﻞﻣﺎﺷ) لﺎﻳر 1,234.50 ﺮﻌﺴﻟا", "السعر 1,234.50 ريال (شامل الضريبة) في عام 2024"],
+    ["ﻲﺿﺎﻤﻟا مﺎﻌﻟا %12.5 ﻞﺑﺎﻘﻣ %18 ﺔﺒﺴﻨﺑ ﻮﻤﻧ", "نمو بنسبة 18% مقابل 12.5% العام الماضي"],
+    ["2023 مﺎﻌﻟ Acme Corp ﺮﻳﺮﻘﺗ ﺮﻈﻧا", "انظر تقرير Acme Corp لعام 2023"],
+    [".ﻮﻫ اﺬﻫ ،ﻢﻌﻧ ؟لوﻷا بﺎﺘﻜﻟا", "الكتاب الأول؟ نعم، هذا هو."],
+    ["The Hebrew word םולש means peace.", "The Hebrew word שלום means peace."],
+    ["He said םלוע םולש and left at 10:30.", "He said שלום עולם and left at 10:30."],
+    ["Arabic: ﻢﻟﺎﻌﻟﺎﺑ ﺎﺒﺣﺮﻣ (hello world) is common.", "Arabic: مرحبا بالعالم (hello world) is common."],
+    ["Order 123 from מ\"עב אפלא תרבח arrived.", "Order 123 from חברת אלפא בע\"מ arrived."],
+  ];
+  assert.deepStrictEqual(
+    read(chrome.map((p) => p[0])),
+    chrome.map((p) => p[1])
+  );
+  // LibreOffice 导出的 PDF 里，括号记的是原文里的那一半（Chrome 记的是画出来的样子）：两种都要对
+  const office = [
+    ["2024 תנשב )מ\"עמ ללוכ( םילקש 1,234.50 אוה ריחמה", "המחיר הוא 1,234.50 שקלים (כולל מע\"מ) בשנת 2024"],
+    ["2024 ماع يف )ةبيرضلا لماش( لاير 1,234.50 رعسلا", "السعر 1,234.50 ريال (شامل الضريبة) في عام 2024"],
+  ];
+  assert.deepStrictEqual(
+    read(office.map((p) => p[0])),
+    office.map((p) => p[1])
+  );
+  // 英文文档里句末的一个词：这一行还是从左往右读
+  assert.deepStrictEqual(read(['The word is \u05dd\u05d5\u05dc\u05e9', 'Plain English line']), ['The word is \u05e9\u05dc\u05d5\u05dd', 'Plain English line']);
+  // 两个字母的合体字（一个字形对两个字）：表里写的是阅读的顺序，整行倒过来以后不能把它也倒了
+  assert.deepStrictEqual(read(['\u0645\ue000\u0633'], 'beginbfchar <E000> <06440627> endbfchar'), ['\u0633\u0644\u0627\u0645']);
 });
 
 // ---------- 真实软件生成的样本 ----------
