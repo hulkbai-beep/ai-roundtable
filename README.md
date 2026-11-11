@@ -1,6 +1,6 @@
 # AI 圆桌
 
-**English:** A local group chat where Claude, Gemini and GPT take turns and reply to each other, using your own subscriptions through their official command-line tools. The app follows your system language; switch any time in Settings → 语言 / Language. This guide is in Chinese for now.
+**English:** A local group chat where Claude, Gemini and GPT take turns and reply to each other, using your own subscriptions through their official command-line tools. You can attach images and documents (PDF, Word, Excel, PowerPoint, text files) to a message. The app follows your system language; switch any time in Settings → 语言 / Language. This guide is in Chinese for now.
 
 把 Claude、Gemini、GPT 拉进同一个群聊：你出题，它们轮流发言、互相接话。程序完全在你自己的电脑上运行。
 
@@ -87,6 +87,7 @@ npm i -g @openai/codex
 - **轮数**：每位成员发言几次。选 2 轮以上，它们会回应彼此的观点。
 - **篇幅**：简短 / 适中 / 详细
 - **@点名**：消息里写 `@Claude`、`@Gemini`、`@GPT`，只有被点到的成员回答；`@所有人` 表示全员。
+- **发图片和文件**：点输入框旁边的回形针，或者把文件拖进窗口、直接粘贴截图。支持图片（PNG、JPG、GIF、WebP）、PDF、Word / Excel / PowerPoint（docx、xlsx、pptx）和各种纯文本文件（txt、md、csv、json、代码等）；每个文件最大 15 MB，一条消息最多 10 个。文档里的文字是在你自己的电脑上取出来的，和聊天记录一起发给每位成员，所以三位都能看到内容。图片和取不出文字的 PDF（扫描件）会把文件本身交给各位成员，对方要能“看图”才行，见下面的常见问题。成员说的「附件 1」「附件 2」，是按你发出的先后顺序编的号。
 - **继续聊**：不发新消息，让大家再聊一轮。
 - **停止**：打断正在发言的成员，取消后面排队的发言。
 - 它们说话的时候你也可以插话：新消息会被后面发言的成员看到，并替换掉还没轮到的发言安排。
@@ -107,6 +108,24 @@ npm i -g @openai/codex
 - **Gemini（agy）没有输出或者一直超时**：有用户反馈 agy 被别的程序调用时可能卡住。先确认 agy 是最新版本；还不行的话，在设置里把 Gemini 的接入方式换成「Gemini API Key」。这需要在 Google AI Studio（https://aistudio.google.com）申请 API Key，而且**不走 AI Pro 订阅**，费用和免费额度以官网为准。
 - **GPT（Codex）提示登录问题**：在 PowerShell 里运行一次 `codex` 重新登录。**提示额度用完**：免费账号的额度比较小，过一阵再试，或者暂时换成 GitHub Models。
 - **Codex 回复比较慢**：在设置里把 GPT 的「思考强度」选成「低」，让它少想一点、回复快一些。
+
+**发了图片或文件，有成员说看不到？** 文档里的文字每位成员都能看到；图片和扫描的 PDF 要看各家怎么接收文件：
+
+| 成员（接入方式） | 图片、扫描的 PDF 是怎么交给它的 |
+|---|---|
+| Claude（Claude Code） | 它自己打开文件来看。带附件的那几次发言会临时打开“读文件”这一个工具；没有另外给它授权，按 Claude Code 默认的规则，它只能读运行目录（也就是保存附件的地方）里的文件 |
+| GPT（Codex CLI） | 图片直接附在消息里；PDF 由它自己打开 |
+| Gemini（Antigravity CLI） | 只能告诉它文件在哪、让它自己打开。**这一种还没有在真机上验证过**，它看不到的话，把接入方式换成「Gemini API Key」 |
+| Gemini API Key | 随请求一起发过去 |
+| GitHub Models、自定义接口 | 随请求一起发过去。模型不收 PDF 或图片时，AI 圆桌会去掉它们再发一次，并在那条回复下面注明哪个附件没发过去 |
+
+另外几种情况：
+
+- **文档很长**：每位成员一次发言能带的字数有限（设置里显示高级选项后的「最多带多少字的聊天记录」，附件最多占一半）。放不下时只带开头，回复下面会注明“只发了开头多少字”。Claude Code 和 Codex 会自己去读完整的文字，其他成员可以把这个上限调大，或者把文档拆小了再发。特别长的文档最多读出开头的 40 万字，附件上会标「不完整」。
+- **PDF 显示“读不出文字”**：多半是扫描件，或者加了密码。这时只有能直接看 PDF 的成员看得到内容。
+- **旧格式的 .doc / .xls / .ppt**：读不了。用 Word / Excel / PowerPoint 另存为 .docx / .xlsx / .pptx 或 PDF 再发。
+- **文本文件变成乱码**：能自动识别 UTF-8、UTF-16、GBK（GB18030）和西欧语言的 Windows-1252。其他编码（比如繁体中文的 Big5、日文的 Shift_JIS）认不出来，请先另存为 UTF-8。
+- **附件很多**：一次发言最多带最近的 8 个图片 / PDF 文件，更早的只告诉成员文件名。聊得很长、附件特别多时，最早的那些不再列出，回复下面会注明。
 
 **连不上 GitHub / Google 的接口？** 如果你平时要开代理（比如 Clash），在设置里填代理地址，例如 `http://127.0.0.1:7890`。
 
@@ -132,7 +151,8 @@ npm i -g @openai/codex
 
 - 程序只在你的电脑上运行，只接受本机（127.0.0.1）的访问，局域网里的其他设备连不上。
 - 设置、聊天记录和日志保存在 `%APPDATA%\AI Roundtable`（菜单「文件」→「打开数据文件夹」）。API Key、Token 等设置保存在其中的 `config.json`（明文），不要发给别人。卸载程序时这些数据会保留。
-- 三个命令行工具都在数据目录里一个空的 `workspace` 文件夹里运行。Claude 的工具被关掉了，Codex 是只读模式，另外也会要求它们只聊天、不读写文件、不运行命令。
+- 三个命令行工具都在数据目录里的 `workspace` 文件夹里运行，里面只有你发过的附件（`workspace\attachments`）。Claude 的工具平时是关掉的，只有带着附件发言时才打开“读文件”这一个；Codex 是只读模式。另外也会要求它们只聊天、除了看附件不读写别的文件、不运行命令。
+- 你发的图片和文件保存在 `workspace\attachments`，和聊天记录一样一直留着（打开历史对话时还能看到）；选了但没发出去的，关闭程序时会删掉。文档的文字是在本机取出来的；附件的内容只会发给参加群聊的那几家 AI。
 
 ---
 
@@ -144,8 +164,9 @@ npm i -g @openai/codex
 | `server.js`、`start.bat` | 浏览器版入口：不装桌面版也能用（需要 Node.js 18+） |
 | `lib/` | 后台：调度谁发言（`orchestrator.js`）、三家的接入方式（`providers.js`）、Windows 上启动命令行工具（`spawn.js`）、用量和额度（`usage.js`、`limits.js`） |
 | `lib/prompt.js` | 群聊规则（AI 的“人设”），想调整说话风格改这里 |
+| `lib/attachments.js`、`lib/doc-text.js`、`lib/pdf-text.js` | 附件：判断文件类型、保存，从 Word / Excel / PowerPoint / PDF / 文本文件里取出文字（自己解析，不依赖第三方库） |
 | `public/` | 网页界面，桌面版和浏览器版共用 |
-| `test/` | 自动测试，用模拟的命令行工具和接口，不会真的调用 AI |
+| `test/` | 自动测试，用模拟的命令行工具和接口，不会真的调用 AI。`test/fixtures/` 里是真实软件生成的样本文档 |
 
 ```bash
 npm install            # 安装开发依赖（Electron 和打包工具）

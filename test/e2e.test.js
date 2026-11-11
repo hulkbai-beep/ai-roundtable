@@ -782,23 +782,36 @@ test('密钥：界面上只显示打码后的值，不重新填写时保持不�
 
 test('安全：拒绝其他网站和非本机 Host 的请求', async () => {
   const http = require('http');
-  const raw = (headers, method = 'GET', p = '/api/state') =>
+  const raw = (headers, method = 'GET', p = '/api/state', body = '{}') =>
     new Promise((resolve) => {
       const req = http.request({ host: '127.0.0.1', port: app.port, path: p, method, headers }, (res) => {
         res.resume();
         resolve(res.statusCode);
       });
-      req.end(method === 'POST' ? '{}' : undefined);
+      req.end(method === 'POST' ? body : undefined);
     });
   assert.strictEqual(await raw({ Host: 'evil.example.com' }), 403);
   assert.strictEqual(await raw({ Host: `127.0.0.1:${app.port}`, Origin: 'http://evil.example.com', 'Content-Type': 'application/json' }, 'POST', '/api/stop'), 403);
   assert.strictEqual(await raw({ Host: `127.0.0.1:${app.port}`, 'Content-Type': 'application/x-www-form-urlencoded' }, 'POST', '/api/stop'), 415);
+  // 只认 application/json：别的网站不经预检就能发的那几种类型（text/plain 等）一律不收，后面带上 “application/json” 字样也不行
+  for (const type of ['text/plain', 'text/plain; application/json', 'text/plain;charset=application/json', 'multipart/form-data; boundary=application/json', 'application/jsonp', '']) {
+    assert.strictEqual(await raw({ Host: `127.0.0.1:${app.port}`, 'Content-Type': type }, 'POST', '/api/stop'), 415, type);
+  }
+  for (const type of ['application/json', 'application/json; charset=utf-8', 'Application/JSON;charset=UTF-8', ' application/json ']) {
+    assert.strictEqual(await raw({ Host: `127.0.0.1:${app.port}`, 'Content-Type': type }, 'POST', '/api/stop'), 200, type);
+  }
   assert.strictEqual(await raw({ Host: `127.0.0.1:${app.port}` }, 'GET', '/../package.json'), 404);
   // 成员 id 只认三位成员，对象自带的属性名（constructor、__proto__）不算
   assert.strictEqual((await c.post('/api/test/constructor')).status, 400);
   assert.strictEqual((await c.post('/api/usage/retry', { member: 'constructor' })).status, 400);
   assert.strictEqual((await c.post('/api/usage/reset', { member: '__proto__' })).status, 400);
   assert.strictEqual((await c.post('/api/usage/retry', { member: 'gpt' })).status, 200);
+  // 内容必须是一个 JSON 对象：null、数字、数组、没写完的，都按“格式不对”回复（以前 null 会让服务端报出一段内部错误）
+  for (const body of ['null', '7', '[]', '"x"', 'true', '{']) {
+    for (const p of ['/api/upload', '/api/discard', '/api/send', '/api/stop']) {
+      assert.strictEqual(await raw({ Host: `127.0.0.1:${app.port}`, 'Content-Type': 'application/json' }, 'POST', p, body), 400, `${p} ${body}`);
+    }
+  }
 });
 
 test('导出和历史对话', async () => {

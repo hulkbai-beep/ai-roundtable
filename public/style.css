@@ -517,6 +517,115 @@ button {
   font-weight: 600;
 }
 
+/* ---------- 附件：聊天记录里的图片和文件 ---------- */
+
+.att-images {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.att-image {
+  display: block;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius);
+  background: #fff;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+  line-height: 0;
+  cursor: zoom-in;
+}
+
+.att-image img {
+  display: block;
+  max-width: 280px;
+  max-height: 240px;
+}
+
+.att-images.multi .att-image img {
+  width: 116px;
+  height: 116px;
+  object-fit: cover;
+}
+
+.att-file {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(340px, 100%);
+  margin-bottom: 6px;
+  padding: 7px 12px 7px 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  text-decoration: none;
+  box-shadow: var(--shadow);
+}
+
+a.att-file:hover {
+  border-color: var(--primary);
+}
+
+.att-file.missing {
+  opacity: 0.6;
+}
+
+.file-badge {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: 6px;
+  background: #7d8798;
+  color: #fff;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.file-badge.ext-pdf {
+  background: #d4504c;
+}
+.file-badge.ext-docx {
+  background: #2f6fd6;
+}
+.file-badge.ext-xlsx,
+.file-badge.ext-csv {
+  background: #1e9e62;
+}
+.file-badge.ext-pptx {
+  background: #d9772b;
+}
+
+.att-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.4;
+  text-align: left;
+}
+
+.att-name,
+.att-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.att-name {
+  font-size: 13.5px;
+}
+
+.att-meta {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
 .msg-tools {
   display: flex;
   gap: 8px;
@@ -779,6 +888,11 @@ button {
   line-height: 1.7;
 }
 
+.welcome p.welcome-files {
+  margin-top: -12px;
+  font-size: 13px;
+}
+
 .setup-tip {
   margin: 0 auto 18px;
   padding: 10px 14px;
@@ -940,6 +1054,82 @@ button {
   margin-right: auto;
   font-size: 12px;
   color: var(--muted);
+}
+
+.input-actions .icon-btn {
+  width: 32px;
+  height: 32px;
+  margin-left: -4px;
+  color: var(--muted);
+}
+
+.input-actions .icon-btn:hover {
+  color: var(--text);
+}
+
+/* 输入区里还没发出去的附件 */
+.attach-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  max-height: 136px;
+  overflow-y: auto;
+}
+
+.attach-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 260px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.attach-item.uploading {
+  opacity: 0.6;
+}
+
+.attach-item .file-badge,
+.attach-thumb {
+  width: 34px;
+  height: 34px;
+}
+
+.attach-thumb {
+  flex: none;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: #fff;
+  overflow: hidden;
+  cursor: zoom-in;
+}
+
+.attach-thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.attach-remove {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  font-size: 17px;
+  line-height: 1;
+}
+
+.attach-remove:hover {
+  background: var(--notice-bg);
+  color: var(--text);
 }
 
 .btn {
@@ -1306,6 +1496,42 @@ textarea.input {
   color: var(--muted);
   font-size: 13.5px;
   line-height: 1.7;
+}
+
+/* ---------- 看大图、拖文件进来 ---------- */
+
+.lightbox {
+  z-index: 25;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.84);
+  cursor: zoom-out;
+}
+
+.lightbox img {
+  max-width: calc(100vw - 48px);
+  max-height: calc(100vh - 48px);
+  border-radius: 4px;
+  background: #fff;
+}
+
+.drop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgba(7, 193, 96, 0.12);
+  pointer-events: none;
+}
+
+.drop-overlay > div {
+  padding: 18px 28px;
+  border: 2px dashed var(--primary);
+  border-radius: 12px;
+  background: var(--surface);
+  font-size: 16px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16);
 }
 
 /* ---------- 提示 ---------- */
