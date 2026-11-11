@@ -58,7 +58,10 @@ function waitExit(child, timeout) {
 }
 
 async function startAppWithMocks(env, port) {
-  const app = launch([`--data-dir=${tmpDir('rt-app-')}`, `--port=${port}`], env);
+  // 数据目录的名字带空格和中文：Windows 上用户名是中文的很常见（C:\Users\张三\AppData\Roaming\AI Roundtable），
+  // 三个命令行工具要在这样的目录里运行，附件的路径也要原样传到它们手里
+  const dataDir = path.join(tmpDir('rt-app-'), '数据 目录');
+  const app = launch([`--data-dir=${dataDir}`, `--port=${port}`], env);
   const c = client(port);
   await waitFor(
     async () => {
