@@ -52,6 +52,7 @@
           </div>
           <h2 data-en="Claude, Gemini and GPT in one group chat">把 Claude、Gemini、GPT 拉进同一个群</h2>
           <p data-en-html="You set the topic; they take turns and build on each other. To ask just one of them, mention them with &lt;b&gt;@name&lt;/b&gt;.">你出题，它们轮流发言、互相接话。想让某一位单独回答，就用 <b>@名字</b> 点名。</p>
+          <p class="welcome-files" data-en="You can also add images, PDFs, Word / Excel / PowerPoint files and text files: drag them in, paste them, or click the paperclip.">也可以发图片、PDF、Word / Excel / PowerPoint 和文本文件：拖进来、粘贴，或者点回形针。</p>
           <div class="setup-tip hidden" id="setup-tip" data-en-html="First time here? Open &lt;b&gt;Settings&lt;/b&gt; (top right), check that each member's command was found, pick a model and reasoning effort, then click &quot;Save and test&quot; for each member.">第一次用？先点右上角的 <b>设置</b>，看看每位成员的命令是不是都找到了，选好模型和思考强度，再给每位成员点一下「保存并测试」。</div>
           <div class="examples">
             <button class="example" type="button" data-mode="debate" data-text="AI 会让大部分程序员失业吗？请各自先亮明立场。" data-en-text="Will AI put most programmers out of work? Each of you, state your position first."><span class="tag" data-en="Debate">辩论</span><span data-en="Will AI put most programmers out of work?">AI 会让大部分程序员失业吗？</span></button>
@@ -76,8 +77,13 @@
         <div class="mention-chips" id="mention-chips"></div>
       </div>
       <div class="input-box">
+        <div class="attach-list hidden" id="attach-list"></div>
         <textarea id="input" rows="2" placeholder="说点什么……  Enter 发送，Shift+Enter 换行；用 @Claude / @Gemini / @GPT 点名" data-en-placeholder="Say something...  Enter to send, Shift+Enter for a new line; mention @Claude / @Gemini / @GPT to ask one of them"></textarea>
         <div class="input-actions">
+          <button class="icon-btn" id="btn-attach" type="button" title="添加图片或文档（也可以直接拖进来或粘贴）" aria-label="添加图片或文档（也可以直接拖进来或粘贴）" data-en-title="Add images or documents (you can also drag them in or paste)">
+            <svg viewBox="0 0 24 24"><path d="M20.5 12 12.3 20.2a5.2 5.2 0 0 1-7.4-7.4l8.4-8.4a3.5 3.5 0 0 1 5 5l-8.3 8.3a1.8 1.8 0 0 1-2.5-2.5l7.6-7.6" /></svg>
+          </button>
+          <input class="hidden" id="file-input" type="file" multiple tabindex="-1" aria-hidden="true">
           <span class="queue-hint" id="queue-hint"></span>
           <button class="btn ghost" id="btn-continue" type="button" title="不发新消息，让大家接着再聊一轮" data-en-title="Let everyone go another round without a new message" data-en="Keep going">继续聊</button>
           <button class="btn danger hidden" id="btn-stop" type="button" title="停止正在进行的发言和后面的排队" data-en-title="Stop the replies in progress and everything queued" data-en="Stop">停止</button>
@@ -129,6 +135,11 @@
   </div>
 
   <div class="toast hidden" id="toast" role="status" aria-live="polite"></div>
+
+  <div class="modal lightbox hidden" id="lightbox" role="dialog" aria-modal="true" aria-label="查看图片" data-en-title="View image">
+    <img id="lightbox-img" alt="">
+  </div>
+  <div class="drop-overlay hidden" id="drop-overlay" aria-hidden="true"><div data-en="Drop to add the files">松开鼠标，把文件加进来</div></div>
   <script src="/app.js"></script>
 </body>
 </html>
