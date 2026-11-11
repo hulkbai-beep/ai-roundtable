@@ -174,21 +174,28 @@ test('标签前缀是在解码之前、直接在字节上换的：长的、短�
   }
 });
 
-test('换了前缀、标签又特别多的文件：内存不会涨到原文的十几倍', () => {
-  // 32 MB 的 document.xml（压缩以后 100 KB 左右），两百多万个标签都要换前缀。放在限制了内存的子进程里读：
-  // 解码以后再用 replaceAll 换的写法在这里会因为内存不够直接退出
+test('很小的文件解开以后特别费内存的两种情况：放在限制了内存的子进程里也读得完', () => {
+  // 两个文件压缩以后都只有 100 KB 上下，document.xml 解开是 32 MB：
+  // 1. 两百多万个标签都用 p0: 这种前缀，全都要换（解码以后再用 replaceAll 换的写法会因为内存不够直接退出）
+  // 2. 一段文字是六百多万个 &amp;（用“正则 + 回调”来解的写法会占掉 1 GB 以上，同样直接退出）
   const script = `
-    const { makeZip } = require(${JSON.stringify(path.join(__dirname, 'files'))});
+    const { makeZip, makeDocx } = require(${JSON.stringify(path.join(__dirname, 'files'))});
     const { inspect } = require(${JSON.stringify(path.join(__dirname, '..', 'lib', 'attachments'))});
+    const size = 32 * 1024 * 1024;
     const ns = 'xmlns:p0="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
     const para = '<p0:p><p0:r><p0:t>x</p0:t></p0:r></p0:p>';
-    const zip = makeZip({ 'word/document.xml': '<p0:document ' + ns + '><p0:body>' + para.repeat(Math.floor(32 * 1024 * 1024 / para.length)) + '</p0:body></p0:document>' });
-    const r = inspect(zip, 'big.docx');
-    console.log(zip.length < 1024 * 1024, r.text.length, r.partial);
+    const files = [
+      makeZip({ 'word/document.xml': '<p0:document ' + ns + '><p0:body>' + para.repeat(Math.floor(size / para.length)) + '</p0:body></p0:document>' }),
+      makeDocx('<w:p><w:r><w:t>' + '&amp;'.repeat(Math.floor(size / 5)) + '</w:t></w:r></w:p>'),
+    ];
+    for (const zip of files) {
+      const r = inspect(zip, 'big.docx');
+      console.log(zip.length < 1024 * 1024, r.text.length, JSON.stringify(r.text.slice(0, 3)), r.partial);
+    }
   `;
   const r = spawnSync(process.execPath, ['--max-old-space-size=160', '-e', script], { encoding: 'utf8', timeout: 120000 });
   assert.strictEqual(r.status, 0, String(r.stderr).slice(0, 300));
-  assert.strictEqual(r.stdout.trim(), `true ${MAX_TEXT - 1} true`);
+  assert.deepStrictEqual(r.stdout.trim().split(/\r?\n/), [`true ${MAX_TEXT - 1} "x\\nx" true`, `true ${MAX_TEXT} "&&&" true`]);
 });
 
 test('Word：页眉、页脚各写一遍，只有页码的不要', () => {
@@ -472,6 +479,12 @@ test('纯文本：二进制文件认不出来，特别长的只留开头', () =>
 test('XML 转义字符', () => {
   assert.strictEqual(decodeXml('a &amp; b &lt;c&gt; &quot;d&quot; &apos;e&apos; &#20013;&#x6587; &#x1F600;'), 'a & b <c> "d" \'e\' 中文 😀');
   assert.strictEqual(decodeXml('&unknown; &#xFFFFFFFF; &amp;amp;'), '&unknown;  &amp;');
+  // 不是这种写法的 & 原样留着；对象上本来就有的名字（constructor 之类）不算
+  assert.strictEqual(decodeXml('&; &#; &#x; &#X41; &amp &#123456789; &constructor; a&&lt;b'), '&; &#; &#x; &#X41; &amp &#123456789; &constructor; a&<b');
+  // 解出 max 个字就停：结果是完整结果的开头，并且不短于 max（调用的地方靠这一点知道没放全）
+  assert.strictEqual(decodeXml('a&lt;b&gt;c&amp;d', 3), 'a<b>');
+  const cut = decodeXml(`${'a&amp;'.repeat(MAX_TEXT)}尾巴`);
+  assert.ok(cut.length > MAX_TEXT && cut.length < MAX_TEXT + 8 && /^(a&)+$/.test(cut), String(cut.length));
 });
 
 // ---------- PDF（现做的小文件） ----------
