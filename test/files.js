@@ -89,17 +89,25 @@ function makeZip(files, { store = false, comment = '', method } = {}) {
 // ---------- Office 文档：只放取文字需要的那几个文件 ----------
 
 const XML_HEAD = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n';
-const W_NS = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"';
+const W_NS =
+  'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"';
 
-// body：<w:body> 里面的内容；styles：<w:styles> 里面的内容
-function makeDocx(body, { styles = '' } = {}) {
-  const files = { 'word/document.xml': `${XML_HEAD}<w:document ${W_NS}><w:body>${body}</w:body></w:document>` };
+// body：<w:body> 里面的内容；styles：<w:styles> 里面的内容；
+// parts：{ footnotes, endnotes, comments }，各自是 <w:footnotes>、<w:endnotes>、<w:comments> 里面的内容；
+// files：另外放进压缩包的文件（页眉、页脚和指向它们的关系文件），原样写进去
+function makeDocx(body, { styles = '', parts = {}, files: more = {} } = {}) {
+  const files = { 'word/document.xml': `${XML_HEAD}<w:document ${W_NS}><w:body>${body}</w:body></w:document>`, ...more };
   if (styles) files['word/styles.xml'] = `${XML_HEAD}<w:styles ${W_NS}>${styles}</w:styles>`;
+  for (const [name, inner] of Object.entries(parts)) files[`word/${name}.xml`] = `${XML_HEAD}<w:${name} ${W_NS}>${inner}</w:${name}>`;
   return makeZip(files);
 }
 
+const REL_TYPES = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/';
+// targets：[[Id, 指向的文件, 类型（可以不写）]]
 const rels = (targets) =>
-  `${XML_HEAD}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${targets.map(([id, target]) => `<Relationship Id="${id}" Type="t" Target="${target}"/>`).join('')}</Relationships>`;
+  `${XML_HEAD}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${targets
+    .map(([id, target, type]) => `<Relationship Id="${id}" Type="${type ? REL_TYPES + type : 't'}" Target="${target}"/>`)
+    .join('')}</Relationships>`;
 
 // sheets：[{ name, file: 'sheet1.xml', rows: '<row>…</row>' }]，按工作簿里的顺序
 function makeXlsx(sheets, { sharedStrings = '', styles = '', date1904 = false, noRels = false } = {}) {
@@ -115,14 +123,22 @@ function makeXlsx(sheets, { sharedStrings = '', styles = '', date1904 = false, n
   return makeZip(files);
 }
 
-// slides：[{ file: 'slide1.xml', body: '<a:p>…</a:p>' }]，按放映的顺序
+// slides：[{ file: 'slide1.xml', body: '<a:p>…</a:p>', notes: 备注页 <p:spTree> 里面的内容, hidden: 放映时跳过 }]，按放映的顺序
 function makePptx(slides, { noRels = false } = {}) {
   const ns = 'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"';
   const files = {
     'ppt/presentation.xml': `${XML_HEAD}<p:presentation ${ns}><p:sldIdLst>${noRels ? '' : slides.map((s, i) => `<p:sldId id="${256 + i}" r:id="rId${i + 1}"/>`).join('')}</p:sldIdLst></p:presentation>`,
   };
   if (!noRels) files['ppt/_rels/presentation.xml.rels'] = rels(slides.map((s, i) => [`rId${i + 1}`, `slides/${s.file}`]));
-  for (const s of slides) files[`ppt/slides/${s.file}`] = `${XML_HEAD}<p:sld ${ns}><p:cSld><p:spTree>${s.body}</p:spTree></p:cSld></p:sld>`;
+  for (const s of slides) {
+    files[`ppt/slides/${s.file}`] = `${XML_HEAD}<p:sld ${ns}${s.hidden ? ' show="0"' : ''}><p:cSld><p:spTree>${s.body}</p:spTree></p:cSld></p:sld>`;
+    if (s.notes === undefined) continue;
+    files[`ppt/slides/_rels/${s.file}.rels`] = rels([
+      ['rId1', '../slideLayouts/slideLayout1.xml', 'slideLayout'],
+      ['rId2', `../notesSlides/notes-${s.file}`, 'notesSlide'],
+    ]);
+    files[`ppt/notesSlides/notes-${s.file}`] = `${XML_HEAD}<p:notes ${ns}><p:cSld><p:spTree>${s.notes}</p:spTree></p:cSld></p:notes>`;
+  }
   return makeZip(files);
 }
 
