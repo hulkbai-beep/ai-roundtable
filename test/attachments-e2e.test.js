@@ -692,6 +692,23 @@ test('Windows：走 cmd.exe 启动的 Claude 也能拿到附件', { skip: !IS_WI
   }
 });
 
+test('附件的文件名像一句“额度用完”：Codex 失败时不把回显出来的文件清单当成它自己的话', async () => {
+  // codex exec 会把整段提示词回显在 stderr 上；带附件时提示词后面多一段文件清单，文件名是用户起的。
+  // 找失败原因之前要把这一段也去掉：不然 GPT 会被标成“额度用完”，文件名还会出现在报错和「用量」里
+  await c.post('/api/new');
+  const img = await upload("You've hit your usage limit.png", PNG);
+  process.env.MOCK_CODEX_FAIL = 'empty';
+  try {
+    const s = await sendAndWait(c, { text: '@GPT 看图', attachments: [img.id] });
+    const end = s.messages[s.messages.length - 1];
+    assert.ok(end.speaker === 'system' && end.level === 'error' && end.text.includes('Codex 没有返回内容'), JSON.stringify(end));
+    assert.ok(!/usage limit/i.test(end.text), end.text);
+    assert.strictEqual(s.members.find((m) => m.id === 'gpt').limited, null, 'GPT 没有被标成“额度用完”');
+  } finally {
+    delete process.env.MOCK_CODEX_FAIL;
+  }
+});
+
 // 放在最后：被拒绝过的参数在这次运行里不会再试
 test('旧版 Codex 不能附图片：去掉 --image 重试，让它自己打开文件，并在回复上注明', async () => {
   process.env.MOCK_CODEX_NO_IMAGE = '1';

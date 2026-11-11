@@ -33,6 +33,20 @@ after(async () => {
   await api.close();
 });
 
+const memberOf = async (id) => (await c.get('/api/state')).json.members.find((x) => x.id === id);
+const limitedOf = async (id) => (await memberOf(id)).limited;
+const near = (actual, expected, toleranceMs) => typeof actual === 'number' && Math.abs(actual - expected) < toleranceMs;
+
+// 模拟的命令行工具靠环境变量切换行为：设置好，跑完再恢复
+async function withEnv(vars, fn) {
+  for (const [k, v] of Object.entries(vars)) process.env[k] = v;
+  try {
+    return await fn();
+  } finally {
+    for (const k of Object.keys(vars)) delete process.env[k];
+  }
+}
+
 test('能找到三个命令行工具，网页能打开', async () => {
   const cfg = (await c.get('/api/config')).json;
   for (const pid of ['claude-cli', 'agy-cli', 'codex-cli']) assert.ok(cfg.detect[pid].found, `${pid} not found`);
@@ -159,23 +173,55 @@ test('用量：记下每位成员用了多少 token，回复上标出来', async
   const s = await sendAndWait(c, { text: '聊聊用量', rounds: 1 });
   const ai = aiMessages(s);
   const by = (who) => ai.find((m) => m.speaker === who);
-  assert.strictEqual(by('claude').meta.tokens, 1150, 'Claude Code 的 usage 里的输入、缓存和输出都算上');
+  assert.strictEqual(by('claude').meta.tokens, 170, 'Claude Code：输入（含写进缓存的）+ 输出；读缓存的部分不算进合计');
   assert.strictEqual(by('gpt').meta.tokens, 1234, 'Codex 输出里的 tokens used');
   assert.ok(by('gemini').meta.tokens > 0 && by('gemini').meta.tokensEstimated, 'agy 不报用量，按字数估算');
   const m = Object.fromEntries(s.members.map((x) => [x.id, x]));
-  assert.deepStrictEqual(
-    { total: m.claude.usage.h5.total, calls: m.claude.usage.h5.calls, est: m.claude.usage.h5.estimated },
-    { total: 1150, calls: 1, est: false }
-  );
+  assert.deepStrictEqual(m.claude.usage.h5, { input: 120, output: 50, total: 170, cached: 1000, calls: 1, estimated: false });
   assert.strictEqual(m.gpt.usage.day.total, 1234);
   assert.ok(m.gemini.usage.week.estimated);
   await c.post('/api/usage/reset', { member: 'claude' });
-  const after = (await c.get('/api/state')).json.members.find((x) => x.id === 'claude');
+  const after = await memberOf('claude');
   assert.strictEqual(after.usage.week.calls, 0);
 });
 
+test('用量：Claude Code 内部多次调用的合计、Codex 在别的语言系统上的写法、接口里走缓存的部分', async () => {
+  await c.post('/api/new');
+  // modelUsage 是所有模型调用的合计（主对话 120 + 50，加一次内部的辅助调用 7 + 3）
+  let s = await withEnv({ MOCK_CLAUDE_MODEL_USAGE: '1' }, () => sendAndWait(c, { text: '@Claude 你好' }));
+  assert.strictEqual(aiMessages(s).pop().meta.tokens, 180);
+  // 德语系统上 codex 把 1234 写成 1.234
+  s = await withEnv({ MOCK_CODEX_LOCALE: 'de' }, () => sendAndWait(c, { text: '@GPT 你好' }));
+  assert.strictEqual(aiMessages(s).pop().meta.tokens, 1234);
+  // 回复的最后一行正好是 “tokens used”：真正的那两行在它后面，照样读得出来
+  s = await withEnv({ MOCK_CODEX_REPLY: 'footer' }, () => sendAndWait(c, { text: '@GPT 你好' }));
+  const footer = aiMessages(s).pop();
+  assert.ok(footer.text.endsWith('tokens used'), footer.text);
+  assert.deepStrictEqual([footer.meta.tokens, footer.meta.tokensEstimated], [1234, false]);
+
+  await c.post('/api/config', {
+    members: { gpt: { provider: 'github-models' }, gemini: { provider: 'gemini-api', 'gemini-api': { apiKey: 'good-key', baseUrl: `http://127.0.0.1:${api.port}` } } },
+  });
+  try {
+    const tokens = (st, who) => aiMessages(st).filter((x) => x.speaker === who).pop().meta.tokens;
+    s = await sendAndWait(c, { text: '@GPT @Gemini 你好' });
+    assert.strictEqual(tokens(s, 'gpt'), 340, 'prompt_tokens + completion_tokens');
+    assert.strictEqual(tokens(s, 'gemini'), 250, '输入 + 输出 + 思考');
+    await c.post('/api/usage/reset', {});
+    api.setMode('cached');
+    s = await sendAndWait(c, { text: '@GPT @Gemini 再来' });
+    assert.strictEqual(tokens(s, 'gpt'), 140, 'prompt_tokens 里走缓存的 200 不算进合计');
+    assert.strictEqual(tokens(s, 'gemini'), 100, 'promptTokenCount 里走缓存的 150 不算进合计');
+    const m = Object.fromEntries(s.members.map((x) => [x.id, x]));
+    assert.deepStrictEqual(m.gpt.usage.h5, { input: 100, output: 40, total: 140, cached: 200, calls: 1, estimated: false });
+    assert.deepStrictEqual(m.gemini.usage.h5, { input: 50, output: 50, total: 100, cached: 150, calls: 1, estimated: false });
+  } finally {
+    api.setMode('ok');
+    await c.post('/api/config', { members: { gpt: { provider: 'codex-cli' }, gemini: { provider: 'agy-cli' } } });
+  }
+});
+
 test('额度用完：提醒、标出来，其他成员继续；点名会再试，成功就恢复', async () => {
-  const limitedOf = async (id) => (await c.get('/api/state')).json.members.find((x) => x.id === id).limited;
   process.env.MOCK_CODEX_LIMIT = '1';
   try {
     await c.post('/api/new');
@@ -187,7 +233,13 @@ test('额度用完：提醒、标出来，其他成员继续；点名会再试�
     assert.deepStrictEqual(aiMessages(s).map((x) => x.speaker), ['claude', 'gemini', 'claude', 'gemini']);
     const lim = await limitedOf('gpt');
     assert.strictEqual(lim.provider, 'codex-cli');
-    assert.ok(Math.abs(lim.resetAt - (Date.now() + 125 * 60000)) < 60000, '读出“2 hours 5 minutes”');
+    // codex 报的是钟点（try again at 3:05 PM.），只精确到分钟
+    assert.ok(near(lim.resetAt, Date.now() + 125 * 60000, 2 * 60000), `读出恢复的钟点：${lim.resetAt}`);
+    assert.ok(lim.retryAt > lim.resetAt && lim.retryAt <= lim.resetAt + 60000, '到点后稍等一下再试');
+    assert.ok(alerts[0].text.includes('You’ve hit your usage limit'), '提醒里带上工具的原话');
+    // 「用量」里显示的也是工具的原话。codex 会把提示词回显出来，聊天内容不能混进去（它还会存进 usage.json）
+    assert.ok(lim.message.includes('You’ve hit your usage limit') && lim.message.includes('try again at'), lim.message);
+    assert.ok(!lim.message.includes('两轮讨论') && !lim.message.includes('【'), lim.message);
 
     // 继续聊：直接跳过 GPT（刚提醒过，不再重复说明）
     const before = s.messages.length;
@@ -221,8 +273,9 @@ test('额度用完：所有人都用完时提示；换接入方式或点“再�
     let s = await sendAndWait(c, { text: '大家都没额度了' });
     assert.strictEqual(s.messages.filter((x) => x.alert === 'limit').length, 3);
     const m = Object.fromEntries(s.members.map((x) => [x.id, x]));
-    assert.ok(m.claude.limited.resetAt > Date.now() + 2 * 3600 * 1000, 'Claude 的恢复时间来自 “|时间戳”');
-    assert.strictEqual(m.gemini.limited.resetAt, null);
+    assert.ok(near(m.claude.limited.resetAt, Date.now() + 3 * 3600 * 1000, 2 * 60000), 'Claude 的恢复时间来自 “resets 3:45pm (时区)”');
+    assert.strictEqual(m.gemini.limited.resetAt, null, 'agy 这种报错不说什么时候恢复');
+    assert.ok(near(m.gemini.limited.retryAt, Date.now() + 3600 * 1000, 60000), '不知道恢复时间：一小时后自动再试');
     assert.ok(s.messages[s.messages.length - 1].text.includes('所有成员的额度都用完了'));
 
     s = await sendAndWait(c, { text: '还有人吗' });
@@ -237,14 +290,18 @@ test('额度用完：所有人都用完时提示；换接入方式或点“再�
     delete process.env.MOCK_AGY_LIMIT;
     delete process.env.MOCK_CODEX_LIMIT;
   }
-  // GPT 换成 GitHub Models：之前 Codex 的标记不算数
+  // GPT 换成 GitHub Models：之前 Codex 的标记不算数，GPT 照常发言，也不会说“额度恢复了”
   await c.post('/api/config', { members: { gpt: { provider: 'github-models' } } });
   try {
-    const gpt = (await c.get('/api/state')).json.members.find((x) => x.id === 'gpt');
-    assert.strictEqual(gpt.limited, null);
+    assert.strictEqual(await limitedOf('gpt'), null);
+    const before = (await c.get('/api/state')).json.messages.length;
+    const st = await sendAndWait(c, { text: '@GPT 换了接入方式' });
+    assert.deepStrictEqual(st.messages.slice(before).map((x) => x.speaker), ['user', 'gpt']);
   } finally {
     await c.post('/api/config', { members: { gpt: { provider: 'codex-cli' } } });
   }
+  // 换回 Codex：那个账号的额度还没恢复，标记还在
+  assert.strictEqual((await limitedOf('gpt')).provider, 'codex-cli');
   // “再试一次”：手动清掉标记；连接测试成功也会清掉
   const r = (await c.post('/api/usage/retry', { member: 'claude' })).json;
   assert.strictEqual(r.members.find((x) => x.id === 'claude').limited, null);
@@ -254,20 +311,287 @@ test('额度用完：所有人都用完时提示；换接入方式或点“再�
   assert.deepStrictEqual(aiMessages(s).slice(-3).map((x) => x.speaker).sort(), ['claude', 'gemini', 'gpt']);
 });
 
-test('额度用完（接口）：HTTP 429 标记为额度用完，Retry-After 给出恢复时间', async () => {
+test('额度用完：Claude Code 几个版本的写法都认得出来', async () => {
+  // 现在的写法（You've hit your session limit · resets 3:45pm (时区)）、旧版的 “|时间戳”、
+  // 没有 result 只有 api_error 的、不报错而是把那句话当成回复的
+  for (const [variant, hasTime] of [['1', true], ['legacy', true], ['bare', false], ['reply', true]]) {
+    await c.post('/api/new');
+    const s = await withEnv({ MOCK_CLAUDE_LIMIT: variant }, () => sendAndWait(c, { text: '@Claude 你好' }));
+    try {
+      assert.strictEqual(s.messages.filter((x) => x.alert === 'limit').length, 1, variant);
+      assert.strictEqual(aiMessages(s).length, 0, `${variant}：那句话不应该当成 Claude 的发言`);
+      const lim = s.members.find((x) => x.id === 'claude').limited;
+      assert.strictEqual(lim && lim.provider, 'claude-cli', variant);
+      if (hasTime) assert.ok(near(lim.resetAt, Date.now() + 3 * 3600 * 1000, 2 * 60000), `${variant}: ${lim.resetAt}`);
+      else assert.strictEqual(lim.resetAt, null, variant);
+    } finally {
+      await c.post('/api/usage/retry', { member: 'claude' });
+    }
+  }
+});
+
+test('额度用完：Antigravity CLI 的几种报错都认得出来', async () => {
+  const run = async (variant) => {
+    await c.post('/api/new');
+    const s = await withEnv({ MOCK_AGY_LIMIT: variant }, () => sendAndWait(c, { text: '@Gemini 你好' }));
+    await c.post('/api/usage/retry', { member: 'gemini' });
+    assert.strictEqual(s.messages.filter((x) => x.alert === 'limit').length, 1, variant);
+    return s.members.find((x) => x.id === 'gemini').limited;
+  };
+  // ⚠ Individual quota reached. … Resets in 2h57m45s.
+  let lim = await run('resets');
+  assert.ok(near(lim.resetAt, Date.now() + (2 * 3600 + 57 * 60 + 45) * 1000, 30000), `读出 “Resets in 2h57m45s.”：${lim.resetAt}`);
+  // 旧版本没有 AGY_ERROR 那一行；有时候退出码是 0、原因只在 stderr 上
+  for (const variant of ['old', 'quiet']) {
+    lim = await run(variant);
+    assert.strictEqual(lim.provider, 'agy-cli', variant);
+    assert.strictEqual(lim.resetAt, null, variant);
+  }
+});
+
+test('和额度无关的失败不会被当成额度用完，哪怕大家正好在聊额度', async () => {
+  const words = 'You’ve hit your usage limit. 这句话是什么意思？quota exceeded、rate limit reached、usage limit reached 又是什么？';
+  await c.post('/api/new');
+  // Codex 断网（它会把提示词原样回显出来）、Claude 的服务器繁忙（也是 429）、agy 报 503
+  let s = await withEnv({ MOCK_CODEX_FAIL: '1', MOCK_CLAUDE_BUSY: '1', MOCK_AGY_FAIL: '1' }, () => sendAndWait(c, { text: words }));
+  assert.strictEqual(s.messages.filter((x) => x.alert === 'limit').length, 0);
+  const errors = s.messages.filter((x) => x.speaker === 'system' && x.level === 'error');
+  assert.deepStrictEqual(errors.map((x) => x.text.split(' ')[0]), ['Claude', 'Gemini', 'GPT']);
+  assert.ok(errors[0].text.includes('不是你的额度用完了'), errors[0].text);
+  for (const m of s.members) assert.strictEqual(m.limited, null, m.id);
+
+  // 这个账号的套餐不含 Codex：等多久都没用，不算额度用完，建议换一种接入方式
+  s = await withEnv({ MOCK_CODEX_FAIL: 'plan' }, () => sendAndWait(c, { text: '@GPT 你好' }));
+  const plan = s.messages[s.messages.length - 1];
+  assert.ok(plan.level === 'error' && !plan.alert && plan.text.includes('不包含 Codex') && plan.text.includes('GitHub Models'), plan.text);
+  assert.strictEqual(s.members.find((x) => x.id === 'gpt').limited, null);
+
+  // Codex：磁盘配额满了（操作系统的报错里也有 quota）、服务器回 429 但原因是这一次请求太大
+  for (const variant of ['disk', 'large']) {
+    s = await withEnv({ MOCK_CODEX_FAIL: variant }, () => sendAndWait(c, { text: '@GPT 你好' }));
+    const last = s.messages[s.messages.length - 1];
+    assert.ok(last.level === 'error' && !last.alert && last.text.includes('GPT 发言失败'), `${variant}: ${last.text}`);
+    assert.ok(!last.text.includes('额度暂时用完了'), `${variant}: ${last.text}`);
+    assert.strictEqual(s.members.find((x) => x.id === 'gpt').limited, null, variant);
+  }
+  // agy：消息太大、服务器上这个模型没有容量。状态也是 RESOURCE_EXHAUSTED，但不是这个账号的额度
+  for (const variant of ['large', 'capacity']) {
+    s = await withEnv({ MOCK_AGY_FAIL: variant }, () => sendAndWait(c, { text: '@Gemini 你好' }));
+    const last = s.messages[s.messages.length - 1];
+    assert.ok(last.level === 'error' && !last.alert && last.text.includes('Gemini 发言失败'), `${variant}: ${last.text}`);
+    assert.ok(!last.text.includes('额度暂时用完了'), `${variant}: ${last.text}`);
+    assert.strictEqual(s.members.find((x) => x.id === 'gemini').limited, null, variant);
+  }
+
+  // 接口用 429 报“这一次请求太大”：也不是额度用完。报错很长（模型名字长）时也一样
   await c.post('/api/config', { members: { gpt: { provider: 'github-models' } } });
-  api.setMode('429');
+  try {
+    for (const mode of ['429-large', '429-large-long']) {
+      api.setMode(mode);
+      s = await sendAndWait(c, { text: '@GPT 你好' });
+      const last = s.messages[s.messages.length - 1];
+      assert.ok(last.level === 'error' && !last.alert && last.text.includes('聊天记录太长'), `${mode}: ${last.text}`);
+      assert.strictEqual(s.members.find((x) => x.id === 'gpt').limited, null, mode);
+    }
+  } finally {
+    api.setMode('ok');
+    await c.post('/api/config', { members: { gpt: { provider: 'codex-cli' } } });
+  }
+});
+
+test('Codex 失败又没说原因时，不从它开头那段信息里猜原因', async () => {
+  // 开头那段信息里有 “reasoning effort: …” 和 session id：选了思考强度时，以前会被当成“模型不支持这个思考强度”
+  await c.post('/api/config', { members: { gpt: { 'codex-cli': { effort: 'low' } } } });
   try {
     await c.post('/api/new');
-    const s = await sendAndWait(c, { text: '@GPT 你好' });
-    const gpt = s.members.find((x) => x.id === 'gpt');
+    const s = await withEnv({ MOCK_CODEX_FAIL: 'empty' }, () => sendAndWait(c, { text: '@GPT 你好' }));
+    const last = s.messages[s.messages.length - 1];
+    assert.ok(last.level === 'error' && last.text.includes('Codex 没有返回内容'), last.text);
+    assert.ok(last.text.includes('codex exec') && !last.text.includes('思考强度') && !last.text.includes('登录'), last.text);
+  } finally {
+    await c.post('/api/config', { members: { gpt: { 'codex-cli': { effort: '' } } } });
+  }
+});
+
+test('额度用完（接口）：HTTP 429 标记为额度用完，Retry-After 给出恢复时间；只说请求太多时过几分钟再试', async () => {
+  // Codex 自己重试几次后还是 429：也是请求太频繁，5 分钟后再试
+  await c.post('/api/new');
+  const st = await withEnv({ MOCK_CODEX_LIMIT: '429' }, () => sendAndWait(c, { text: '@GPT 你好' }));
+  const busy = st.members.find((x) => x.id === 'gpt').limited;
+  assert.ok(busy && busy.resetAt === null && near(busy.retryAt, Date.now() + 5 * 60000, 30000), JSON.stringify(busy));
+  await c.post('/api/usage/retry', { member: 'gpt' });
+
+  await c.post('/api/config', { members: { gpt: { provider: 'github-models' } } });
+  try {
+    api.setMode('429');
+    await c.post('/api/new');
+    let s = await sendAndWait(c, { text: '@GPT 你好' });
+    let gpt = s.members.find((x) => x.id === 'gpt');
     assert.strictEqual(gpt.limited.provider, 'github-models');
-    assert.ok(Math.abs(gpt.limited.resetAt - (Date.now() + 120000)) < 10000, gpt.limited.resetAt);
+    assert.ok(near(gpt.limited.resetAt, Date.now() + 120000, 10000), gpt.limited.resetAt);
+    await c.post('/api/usage/retry', { member: 'gpt' });
+
+    // 没有 Retry-After，也没提额度：多半是暂时的，5 分钟后再试（不用等一小时）
+    api.setMode('429-bare');
+    s = await sendAndWait(c, { text: '@GPT 再来' });
+    gpt = s.members.find((x) => x.id === 'gpt');
+    assert.strictEqual(gpt.limited.resetAt, null);
+    assert.ok(near(gpt.limited.retryAt, Date.now() + 5 * 60000, 30000), gpt.limited.retryAt);
   } finally {
     api.setMode('ok');
     await c.post('/api/usage/retry', { member: 'gpt' });
     await c.post('/api/config', { members: { gpt: { provider: 'codex-cli' } } });
   }
+});
+
+test('额度用完（Gemini API）：按天算的额度等到太平洋时间午夜；每分钟的限速按 retryDelay', async () => {
+  await c.post('/api/config', { members: { gemini: { provider: 'gemini-api', 'gemini-api': { apiKey: 'good-key', baseUrl: `http://127.0.0.1:${api.port}` } } } });
+  try {
+    // 返回里的 retryDelay 是 34 秒，但 quotaId 说这是按天算的额度
+    api.setMode('gemini-daily');
+    await c.post('/api/new');
+    let s = await sendAndWait(c, { text: '@Gemini 你好' });
+    let lim = s.members.find((x) => x.id === 'gemini').limited;
+    assert.strictEqual(lim.provider, 'gemini-api');
+    const pacific = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Los_Angeles', hourCycle: 'h23', hour: '2-digit', minute: '2-digit' }).format(new Date(lim.resetAt));
+    assert.strictEqual(pacific, '00:00', '太平洋时间午夜');
+    assert.ok(lim.resetAt > Date.now() && lim.resetAt <= Date.now() + 25 * 3600 * 1000, lim.resetAt);
+    await c.post('/api/usage/retry', { member: 'gemini' });
+
+    api.setMode('gemini-minute');
+    s = await sendAndWait(c, { text: '@Gemini 再来' });
+    lim = s.members.find((x) => x.id === 'gemini').limited;
+    assert.ok(near(lim.resetAt, Date.now() + 34000, 10000), lim.resetAt);
+  } finally {
+    api.setMode('ok');
+    await c.post('/api/usage/retry', { member: 'gemini' });
+    await c.post('/api/config', { members: { gemini: { provider: 'agy-cli' } } });
+  }
+});
+
+test('额度用完：改了这位成员的接入设置就去掉标记，改别的不动', async () => {
+  await c.post('/api/new');
+  // “try again later”：没说什么时候恢复
+  await withEnv({ MOCK_CODEX_LIMIT: 'later' }, () => sendAndWait(c, { text: '@GPT 你好' }));
+  try {
+    const lim = await limitedOf('gpt');
+    assert.ok(lim && lim.resetAt === null);
+    assert.ok(near(lim.retryAt, Date.now() + 3600 * 1000, 60000), '一小时后自动再试');
+    // 改语言、改别人的设置、改 GPT 另一种接入方式的设置：标记还在
+    await c.post('/api/config', { lang: 'zh', members: { claude: { 'claude-cli': { model: 'opus' } }, gpt: { 'github-models': { model: 'openai/gpt-4o' } } } });
+    assert.ok(await limitedOf('gpt'));
+    // 改了 Codex 自己的设置（可能换了账号或模型）：去掉标记，下次直接试
+    await c.post('/api/config', { members: { gpt: { 'codex-cli': { model: 'gpt-x' } } } });
+    assert.strictEqual(await limitedOf('gpt'), null);
+  } finally {
+    await c.post('/api/usage/retry', { member: 'gpt' });
+    await c.post('/api/config', { members: { claude: { 'claude-cli': { model: '' } }, gpt: { 'codex-cli': { model: '' }, 'github-models': { model: 'openai/gpt-4.1' } } } });
+  }
+});
+
+test('额度用完：协作模式里负责总结的人用完了，改由最后一位发言的人总结', async () => {
+  await c.post('/api/new');
+  // 两轮：Claude、Gemini、GPT、Claude、Gemini、GPT（总结）。GPT 第一轮就用完了
+  const s = await withEnv({ MOCK_CODEX_LIMIT: '1' }, () => sendAndWait(c, { text: '一起写个方案', mode: 'collab', rounds: 2 }));
+  try {
+    const ai = aiMessages(s);
+    assert.deepStrictEqual(ai.map((x) => x.speaker), ['claude', 'gemini', 'claude', 'gemini']);
+    assert.strictEqual(parseInfo(ai[1].text, 'MOCK-AGY').final, undefined);
+    assert.strictEqual(parseInfo(ai[2].text, 'MOCK-CLAUDE').final, undefined);
+    assert.strictEqual(parseInfo(ai[3].text, 'MOCK-AGY').final, true, '最后发言的 Gemini 应该收到“请总结”');
+  } finally {
+    await c.post('/api/usage/retry', { member: 'gpt' });
+  }
+});
+
+test('额度用完：负责总结的人正好在总结那一次用完了，请刚发过言的最后一位补一次总结', async () => {
+  await c.post('/api/new');
+  // 每人只说一轮：Claude、Gemini、GPT（总结）。GPT 一开口就发现额度用完了，这时队列里已经没有别人
+  process.env.MOCK_CODEX_LIMIT = '1';
+  try {
+    let s = await sendAndWait(c, { text: '一起写个方案', mode: 'collab', rounds: 1 });
+    const ai = aiMessages(s);
+    assert.deepStrictEqual(ai.map((x) => x.speaker), ['claude', 'gemini', 'gemini']);
+    assert.strictEqual(parseInfo(ai[1].text, 'MOCK-AGY').final, undefined);
+    assert.strictEqual(parseInfo(ai[2].text, 'MOCK-AGY').final, true, 'Gemini 补一次总结');
+    assert.strictEqual(s.messages.filter((x) => x.alert === 'limit').length, 1);
+    // 只点了 GPT 一个人的名：这一轮没有别人发过言，不会拉别人来说
+    const before = s.messages.length;
+    s = await sendAndWait(c, { text: '@GPT 你来总结', mode: 'collab' });
+    assert.deepStrictEqual(aiMessages({ messages: s.messages.slice(before) }), []);
+  } finally {
+    delete process.env.MOCK_CODEX_LIMIT;
+    await c.post('/api/usage/retry', { member: 'gpt' });
+  }
+});
+
+test('额度用完：每种接入方式各记各的，换一种又被限了也不会盖掉原来那种的标记', async () => {
+  await c.post('/api/new');
+  await withEnv({ MOCK_CODEX_LIMIT: '1' }, () => sendAndWait(c, { text: '@GPT 你好' }));
+  assert.strictEqual((await limitedOf('gpt')).provider, 'codex-cli');
+  await c.post('/api/config', { members: { gpt: { provider: 'github-models' } } });
+  try {
+    api.setMode('429-bare');
+    await sendAndWait(c, { text: '@GPT 换一种接入方式' });
+    assert.strictEqual((await limitedOf('gpt')).provider, 'github-models');
+    // “再试一次”清掉的是现在用的这种
+    await c.post('/api/usage/retry', { member: 'gpt' });
+    assert.strictEqual(await limitedOf('gpt'), null);
+  } finally {
+    api.setMode('ok');
+    await c.post('/api/config', { members: { gpt: { provider: 'codex-cli' } } });
+  }
+  try {
+    // 换回 Codex：它的标记还在，恢复时间也还是原来那个
+    const lim = await limitedOf('gpt');
+    assert.ok(lim && lim.provider === 'codex-cli' && near(lim.resetAt, Date.now() + 125 * 60000, 3 * 60000), JSON.stringify(lim));
+  } finally {
+    await c.post('/api/usage/retry', { member: 'gpt' });
+  }
+  assert.strictEqual(await limitedOf('gpt'), null);
+});
+
+test('额度用完：发言期间改了这种接入方式的设置，旧设置的“额度用完”不记到新设置头上', async () => {
+  await c.post('/api/new');
+  process.env.MOCK_CLAUDE_LIMIT = '1';
+  process.env.MOCK_DELAY = '1500';
+  try {
+    // Claude 正在用旧设置发言（要一秒半才出结果），这时用户改了模型
+    assert.strictEqual((await c.post('/api/send', { text: '@Claude 你好' })).status, 200);
+    await sleep(100);
+    await c.post('/api/config', { members: { claude: { 'claude-cli': { model: 'opus' } } } });
+    const s = await waitIdle(c);
+    const last = s.messages[s.messages.length - 1];
+    assert.ok(last.level === 'error' && !last.alert && last.text.includes('Claude 发言失败'), last.text);
+    assert.strictEqual(s.members.find((x) => x.id === 'claude').limited, null, '新设置还没试过，不能直接跳过');
+    // 连接测试也一样
+    const pending = c.post('/api/test/claude');
+    await sleep(100);
+    await c.post('/api/config', { members: { claude: { 'claude-cli': { model: 'sonnet' } } } });
+    const t = (await pending).json;
+    assert.ok(!t.ok && !t.limited, JSON.stringify(t));
+    assert.strictEqual(await limitedOf('claude'), null);
+    // 设置没动时照常标记
+    const again = (await c.post('/api/test/claude')).json;
+    assert.ok(!again.ok && again.limited);
+    assert.strictEqual((await limitedOf('claude')).provider, 'claude-cli');
+  } finally {
+    delete process.env.MOCK_CLAUDE_LIMIT;
+    delete process.env.MOCK_DELAY;
+    await c.post('/api/config', { members: { claude: { 'claude-cli': { model: '' } } } });
+    await c.post('/api/usage/retry', { member: 'claude' });
+  }
+});
+
+test('请求内容必须是一个对象：null、数组、数字都回 400，不会让服务出错', async () => {
+  const before = (await c.get('/api/config')).json.config;
+  for (const p of ['/api/send', '/api/continue', '/api/config', '/api/usage/retry', '/api/usage/reset', '/api/history/open', '/api/test/claude']) {
+    for (const body of [null, [], 5, 'x']) {
+      const r = await c.post(p, body);
+      assert.strictEqual(r.status, 400, `${p} ${JSON.stringify(body)}: ${r.status} ${r.text}`);
+    }
+  }
+  assert.deepStrictEqual((await c.get('/api/config')).json.config, before);
 });
 
 test('模型和思考强度：传给命令行和接口，回复上标出来；不支持时自动忽略', async () => {
@@ -439,6 +763,7 @@ test('GitHub Models（备选）：能用；token 错误、额度用完都有提�
     assert.ok(!weird.json.error.includes('HTTP 200'), '成功的响应不应该报“请求失败（HTTP 200）”');
   } finally {
     api.setMode('ok');
+    await c.post('/api/usage/retry', { member: 'gpt' });
     await c.post('/api/config', { members: { gpt: { provider: 'codex-cli' } } });
   }
 });
@@ -476,6 +801,11 @@ test('安全：拒绝其他网站和非本机 Host 的请求', async () => {
     assert.strictEqual(await raw({ Host: `127.0.0.1:${app.port}`, 'Content-Type': type }, 'POST', '/api/stop'), 200, type);
   }
   assert.strictEqual(await raw({ Host: `127.0.0.1:${app.port}` }, 'GET', '/../package.json'), 404);
+  // 成员 id 只认三位成员，对象自带的属性名（constructor、__proto__）不算
+  assert.strictEqual((await c.post('/api/test/constructor')).status, 400);
+  assert.strictEqual((await c.post('/api/usage/retry', { member: 'constructor' })).status, 400);
+  assert.strictEqual((await c.post('/api/usage/reset', { member: '__proto__' })).status, 400);
+  assert.strictEqual((await c.post('/api/usage/retry', { member: 'gpt' })).status, 200);
   // 内容必须是一个 JSON 对象：null、数字、数组、没写完的，都按“格式不对”回复（以前 null 会让服务端报出一段内部错误）
   for (const body of ['null', '7', '[]', '"x"', 'true', '{']) {
     for (const p of ['/api/upload', '/api/discard', '/api/send', '/api/stop']) {
