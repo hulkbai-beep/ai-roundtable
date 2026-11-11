@@ -10,6 +10,7 @@
 - `lib/orchestrator.js`：发言队列。新消息会替换还没轮到的发言；@点名只让被点到的人说一次；某人出错后，这一轮里他后面的发言会跳过。
 - `lib/providers.js`：各种接入方式。`lib/prompt.js`：人设和聊天记录拼装（太长时保留第一条话题和最近的消息）。
 - `lib/spawn.js`：Windows 上启动命令行工具（见下文）。
+- `lib/attachments.js`：附件的类型判断（看文件开头的字节，不信扩展名）、保存和取用，文件在 `workspace/attachments/`。`lib/doc-text.js`（zip + docx / xlsx / pptx + 文本编码）和 `lib/pdf-text.js` 负责取文字，全部自己解析。
 - `public/`：原生 HTML/CSS/JS，不依赖任何框架；Markdown 渲染是自己写的，先转义再排版。
 
 - `lib/i18n.js`：中英文两种界面语言（设置里的 `lang`，留空 = 跟随系统）。服务端的提示和错误写成 `tr('中文', 'English')`；接入方式的说明写成 `L('中文', 'English')`，发给界面前用 `loc()` 选一种。网页里固定文字的英文写在 `index.html` 的 `data-en*` 属性里，`app.js` 里用 `T('中文', 'English')`。新增任何给用户看的文字，都要两种语言一起写。
@@ -24,11 +25,16 @@
 - **Windows 启动策略**：.exe 直接启动（Node 负责参数转义）；npm 生成的 .cmd 会被解析成“node + 脚本”直接启动（优先用 npm 目录里的 node.exe，其次 PATH 里的 node，桌面版没有 Node 时用 Electron 自带的，设置 `ELECTRON_RUN_AS_NODE=1`）；其他 .cmd 只能经过 cmd.exe，这时只传简单参数，人设并进标准输入。
 - **兼容不同版本**：可选参数分组传递，命令行报“不认识的参数”时去掉那一组再试（`runAdaptive`）。
 - **用量和额度用完**（`lib/usage.js`，数据在 `usage.json`）：每次发言记录 token。Claude 读 JSON 里的 `usage`（输入 + 缓存 + 输出），Codex 读输出末尾的 `tokens used`，接口读 `usage` / `usageMetadata`；agy 不报用量，按字数估算并标 ≈。额度用完靠报错识别（`providers.js` 的 `detectLimit` / `parseResetAt`，HTTP 429 也算），错误带 `e.limit = { resetAt }`。标记跟着接入方式走（换了接入方式就不算），读不出恢复时间时一小时后自动再试；被标记的成员在轮流发言里跳过、也不写进其他人的人设，@点名或连接测试成功会清掉标记。各家真实的报错文字没有在真机上核对过，`test/mocks/` 里的写法来自公开资料。
+- **附件**（图片、PDF、docx / xlsx / pptx、纯文本；每个 15 MB、每条消息 10 个）：先上传（`POST /api/upload`，base64 放在 JSON 里）再随 `/api/send` 的 `attachments: [id]` 发出。
+  - 文档的文字在本机取出来，写进提示词的“附件”一段，所以每种接入方式都能看到；这一段最多占 `maxChars` 的一半，新的优先，放不下的只带开头并在回复上注明（`prompt.js` 的 `buildAttachments`，`orchestrator.js` 的 `attachmentNote`）。
+  - 图片和取不出文字的 PDF 要把“文件本身”送到，各家不一样（`providers.js` 里“附件里的文件”一节）：Claude Code 打开 Read 工具让它自己读（只在带附件时加 `--tools Read`，不加 `--allowedTools`，所以只能读 workspace）；Codex 图片用 `--image`，其他文件自己打开；agy 只能告诉它路径；HTTP 接口转成 base64 放进请求，对方拒绝时先去掉 PDF、再去掉图片重试（`sendWithFallbacks`），并在回复上注明。Codex 的 `--image` 和 agy 读文件都没有在真机上验证过。
+  - 文件是用户从别处拿来的，取文字的代码处处有上限（解压大小、处理时间、输出字数、PDF 的表单展开次数等），没取全的标 `partial`。**改这两个文件时不要用“<a>…</a>”这类会来回试的正则，也不要让 `[ \t]+\n` 这样的正则从一长串空白的每个位置各试一遍**：都用 `indexOf` 顺着扫，或者加 `(?<!…)` 只从开头试一次。`test/attachments.test.js` 里“坏掉的、故意做出来捣乱的文件”一节的每个测试对应一种会卡死旧写法的文件。
+  - 文本编码只认 UTF-8、UTF-16（BOM）、GB18030、Windows-1252，拿不准时算中文（`looksWestern`）。Big5、Shift_JIS 等认不出来。
 - 没有用 `--safe-mode`：担心它让 Claude Code 忽略 settings.json 里配置的代理等环境变量。
 
 ## 测试
 
-- `npm test`：单元测试 + 端到端测试（真实的本地服务，加上 `test/mocks/` 里模拟的 claude/agy/codex 和模拟接口）+ 只在 Windows 上运行的参数传递测试。
+- `npm test`：单元测试 + 端到端测试（真实的本地服务，加上 `test/mocks/` 里模拟的 claude/agy/codex 和模拟接口）+ 只在 Windows 上运行的参数传递测试。附件的测试在 `test/attachments.test.js`（取文字、保存、提示词）和 `test/attachments-e2e.test.js`（上传到各家收到的整条路）；样本文档在 `test/fixtures/`（真实软件生成的，说明见那里的 README），其他文件用 `test/files.js` 现做。
 - `test/packaged-app.test.js`：测试打包后的桌面版（CI 在 Windows 上跑）。本机可以用 `xvfb-run -a node test/packaged-app.test.js -- node_modules/electron/dist/electron --no-sandbox .` 测开发版。
 - 还没有用真实账号测试过真实的 claude / agy / codex / GitHub Models。用户（Windows）的 codex 是用 npm 装的：`%APPDATA%\npm\codex.cmd`。
 

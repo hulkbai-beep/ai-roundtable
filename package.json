@@ -11,7 +11,7 @@
   "scripts": {
     "start": "node server.js",
     "app": "electron .",
-    "test": "node --test test/unit.test.js test/e2e.test.js test/windows.test.js",
+    "test": "node --test test/unit.test.js test/attachments.test.js test/e2e.test.js test/attachments-e2e.test.js test/windows.test.js",
     "dist:win": "electron-builder --win nsis --x64 --publish never",
     "icon": "node scripts/make-icon.js"
   },
