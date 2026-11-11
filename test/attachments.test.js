@@ -8,6 +8,7 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
+const { spawnSync } = require('child_process');
 const { setLang } = require('../lib/i18n');
 setLang('zh'); // 下面的断言默认按中文写，英文的地方会临时切换
 const { openZip, officeKind, officeText, docxText, xlsxText, pptxText, decodeText, decodeXml, MAX_TEXT } = require('../lib/doc-text');
@@ -155,6 +156,39 @@ test('Word：标签的前缀换了别的写法（ns0:p）也能读', () => {
   const many = Array.from({ length: 200 }, (_, i) => `xmlns:p${i}="http://schemas.openxmlformats.org/wordprocessingml/2006/main"`).join(' ');
   const big = makeZip({ 'word/document.xml': `<p0:document ${many}><p0:body>${'<p0:p><p0:r><p0:t>x</p0:t></p0:r></p0:p>'.repeat(BAD)}</p0:body></p0:document>` });
   assert.ok(quick('很多前缀', () => docxText(openZip(big))).startsWith('x\nx\n'));
+});
+
+test('标签前缀是在解码之前、直接在字节上换的：长的、短的、去掉的、变长的都对，别的地方不动', () => {
+  const uri = 'http://example.com/ns';
+  const text = (xml, want) => openZip(makeZip({ 'a.xml': xml })).text('a.xml', want);
+  const body = '<ns0:b ns0:val="1">中文 ns0: 1 < 2 <ns0:br/></ns0:b><other:x/></ns0:a><';
+  // 换短（ns0 → w）：开始、结束、自己结束的标签都换；属性上的前缀、文字里的“ns0:”、别的前缀不动
+  assert.strictEqual(text(`<ns0:a xmlns:ns0="${uri}">${body}`, { w: [uri] }), `<w:a xmlns:ns0="${uri}">${body.replaceAll('<ns0:', '<w:').replaceAll('</ns0:', '</w:')}`);
+  // 去掉前缀（表格里通常不带前缀）
+  assert.strictEqual(text(`<x:row xmlns:x='${uri}'><x:c/></x:row>`, { '': [uri] }), `<row xmlns:x='${uri}'><c/></row>`);
+  // 换长（现在用不到，以后加了两个字母的前缀也不会写出界）
+  assert.strictEqual(text(`<a:p xmlns:a="${uri}">${'<a:r/>'.repeat(1000)}</a:p>`, { wide: [uri] }), `<wide:p xmlns:a="${uri}">${'<wide:r/>'.repeat(1000)}</wide:p>`);
+  // 已经是通常的写法、命名空间对不上、没给 want：原样
+  for (const [xml, want] of [[`<w:a xmlns:w="${uri}"/>`, { w: [uri] }], [`<q:a xmlns:q="http://example.com/other"/>`, { w: [uri] }], [`<q:a xmlns:q="${uri}"/>`, undefined]]) {
+    assert.strictEqual(text(xml, want), xml);
+  }
+});
+
+test('换了前缀、标签又特别多的文件：内存不会涨到原文的十几倍', () => {
+  // 32 MB 的 document.xml（压缩以后 100 KB 左右），两百多万个标签都要换前缀。放在限制了内存的子进程里读：
+  // 解码以后再用 replaceAll 换的写法在这里会因为内存不够直接退出
+  const script = `
+    const { makeZip } = require(${JSON.stringify(path.join(__dirname, 'files'))});
+    const { inspect } = require(${JSON.stringify(path.join(__dirname, '..', 'lib', 'attachments'))});
+    const ns = 'xmlns:p0="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
+    const para = '<p0:p><p0:r><p0:t>x</p0:t></p0:r></p0:p>';
+    const zip = makeZip({ 'word/document.xml': '<p0:document ' + ns + '><p0:body>' + para.repeat(Math.floor(32 * 1024 * 1024 / para.length)) + '</p0:body></p0:document>' });
+    const r = inspect(zip, 'big.docx');
+    console.log(zip.length < 1024 * 1024, r.text.length, r.partial);
+  `;
+  const r = spawnSync(process.execPath, ['--max-old-space-size=160', '-e', script], { encoding: 'utf8', timeout: 120000 });
+  assert.strictEqual(r.status, 0, String(r.stderr).slice(0, 300));
+  assert.strictEqual(r.stdout.trim(), `true ${MAX_TEXT - 1} true`);
 });
 
 test('Word：页眉、页脚各写一遍，只有页码的不要', () => {
