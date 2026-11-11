@@ -177,6 +177,7 @@ test('三位成员都能拿到附件：Claude 用 Read 工具，Codex 用 --imag
   const cl = parseInfo(last(s, 'claude').text, 'MOCK-CLAUDE');
   assert.strictEqual(cl.tools, 'Read', '只打开 Read 这一个工具');
   assert.strictEqual(cl.toolsDisabled, false);
+  assert.strictEqual(cl.permissionMode, 'default', '明说用 default 权限模式：读运行目录以外的文件会被拒绝，不跟着用户自己的 Claude Code 设置走');
   assert.strictEqual(cl.filesRule, true, '人设里说明可以查看附件');
   assert.strictEqual(cl.attachments, 3, '三个附件都列在提示词里');
   assert.deepStrictEqual(cl.files, expected, 'Claude 拿到的是完整路径，而且按这个路径读得到文件');
