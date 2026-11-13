@@ -1089,7 +1089,7 @@
     const sel = el('select', { class: 'input' }, ...options.map(([pid, p]) => el('option', { value: pid }, p.label)));
     sel.value = m.provider;
     const fieldsBox = el('div', { class: 'provider-fields' });
-    const renderFields = () => fieldsBox.replaceChildren(...providerFields(id, m.provider));
+    const renderFields = () => fieldsBox.replaceChildren(...providerFields(id, m.provider, () => renderFields()));
     sel.addEventListener('change', () => {
       m.provider = sel.value;
       renderFields();
@@ -1117,6 +1117,13 @@
           const extra = [r.model, r.effort, r.note].filter(Boolean).map((x) => ` · ${x}`).join('');
           const secs = (r.ms / 1000).toFixed(1);
           result.textContent = T(`✓ 连上了（${secs} 秒）回复：“${r.reply}”${extra}`, `✓ Connected (${secs}s). Reply: "${r.reply}"${extra}`);
+          // 这次回复实际用的模型已经记下来了：重画这位成员的设置，模型的名字后面马上就有（拿不到也不要紧，下次打开设置会有）
+          try {
+            settings.models = (await api('/api/config')).models || settings.models;
+            if (fieldsBox.isConnected) renderFields();
+          } catch {
+            /* 不影响测试结果 */
+          }
         } else {
           result.className = 'test-result bad';
           result.replaceChildren(...[el('div', null, `✗ ${r.error}`), r.hint ? el('div', null, T(`建议：${r.hint}`, `Tip: ${r.hint}`)) : null].filter(Boolean));
@@ -1132,13 +1139,14 @@
     return card;
   }
 
-  function providerFields(id, pid) {
+  function providerFields(id, pid, rerender) {
     const p = settings.providers[pid];
     const values = draft.members[id][pid] || (draft.members[id][pid] = {});
     const nodes = [];
     for (const f of p.fields) {
       let control;
       let input;
+      let extraNote = null;
       if (f.secret) {
         const key = `${id}.${pid}.${f.key}`;
         const saved = values[`${f.key}Set`];
@@ -1158,51 +1166,69 @@
         input.addEventListener('change', () => (values[f.key] = input.value));
         control = input;
       } else if (f.type === 'model') {
-        // 下拉选常用模型；“自定义”时显示输入框
+        // 下拉框：“默认”、常用的几个、上次「加载可用模型」问来的（settings.models），最后是“自定义”（显示输入框）
         const CUSTOM = '__custom__';
         const cur = values[f.key] || '';
-        const known = f.choices.some(([v]) => v === cur);
+        const info = (settings.models || {})[`${id}|${pid}`] || {};
+        // 这个名字上次实际用的是哪个模型（例如 Opus → claude-opus-5-5），显示在名字后面
+        const seen = info.seen || {};
+        const withSeen = (label, v) => (seen[v] && seen[v] !== v ? `${label} · ${seen[v]}` : label);
+        const loaded = (info.items || []).filter((m) => !f.choices.some(([v]) => v === m.id));
+        const titleOf = (m) => (m.name && m.name.toLowerCase() !== m.id.toLowerCase() ? `${m.name} · ${m.id}` : m.id);
+        const known = (v) => f.choices.some(([c]) => c === v) || loaded.some((m) => m.id === v);
         const sel = el(
           'select',
-          { class: 'input' },
-          el('option', { value: '' }, T('默认', 'Default')),
-          ...f.choices.map(([v, label]) => el('option', { value: v }, label)),
+          { class: 'input', 'aria-label': f.label },
+          f.noDefault ? null : el('option', { value: '' }, withSeen(T('默认', 'Default'), '')),
+          ...f.choices.map(([v, label]) => el('option', { value: v }, withSeen(label, v))),
+          loaded.length ? el('optgroup', { label: T('这个账号能用的', 'Available to your account') }, ...loaded.map((m) => el('option', { value: m.id }, titleOf(m)))) : null,
           el('option', { value: CUSTOM }, T('自定义…', 'Custom...'))
         );
-        input = el('input', { class: 'input', type: 'text', spellcheck: 'false', placeholder: f.placeholder || '' });
-        input.value = known ? '' : cur;
-        sel.value = !cur ? '' : known ? cur : CUSTOM;
+        input = el('input', { class: 'input', type: 'text', spellcheck: 'false', placeholder: f.placeholder || '', 'aria-label': T('自定义的模型名称', 'Custom model name') });
+        const custom = cur ? !known(cur) : Boolean(f.noDefault);
+        input.value = custom ? cur : '';
+        sel.value = custom ? CUSTOM : cur;
+        // 只有“自定义”这一项时（还没加载过列表的自定义接口），下拉框没有用，只留输入框
+        sel.classList.toggle('hidden', sel.options.length === 1);
+        // 选中的模型的说明；没有的话，写这份列表是什么时候加载的
+        const note = el('span', { class: 'field-help model-note' });
         const sync = () => {
           input.classList.toggle('hidden', sel.value !== CUSTOM);
           values[f.key] = sel.value === CUSTOM ? input.value.trim() : sel.value;
+          const picked = loaded.find((m) => m.id === sel.value);
+          note.textContent =
+            picked && picked.note
+              ? picked.note
+              : info.at && info.items && info.items.length
+                ? T(`${fmtTime(info.at)} 加载了 ${info.items.length} 个模型`, `${info.items.length} models, loaded ${fmtTime(info.at)}`)
+                : '';
+          note.classList.toggle('hidden', !note.textContent);
         };
         sel.addEventListener('change', () => {
           sync();
           if (sel.value === CUSTOM) input.focus();
         });
         input.addEventListener('input', sync);
-        input.classList.toggle('hidden', sel.value !== CUSTOM);
+        sync();
         control = el('div', { class: 'model-pick' }, sel, input);
+        if (f.loadModels) {
+          const btn = el('button', { class: 'btn ghost sm', type: 'button' }, T('加载可用模型', 'Load available models'));
+          btn.addEventListener('click', () => loadModels(btn, id, rerender));
+          control.append(btn);
+        }
+        extraNote = note;
       } else if (f.type === 'number') {
         input = el('input', { class: 'input', type: 'number', min: '1000', step: '1000' });
         input.value = values[f.key] == null ? '' : values[f.key];
         input.addEventListener('input', () => (values[f.key] = Number(input.value)));
         control = input;
       } else {
-        const listId = f.suggestions || f.loadModels ? `dl-${id}-${pid}-${f.key}` : null;
-        input = el('input', { class: 'input', type: 'text', spellcheck: 'false', placeholder: f.placeholder || '', list: listId });
+        input = el('input', { class: 'input', type: 'text', spellcheck: 'false', placeholder: f.placeholder || '' });
         input.value = values[f.key] || '';
         input.addEventListener('input', () => (values[f.key] = input.value));
-        control = listId
-          ? el('div', { class: 'with-btn' }, input, el('datalist', { id: listId }, ...(f.suggestions || []).map((s) => el('option', { value: s }))))
-          : input;
-        if (f.loadModels) {
-          const btn = el('button', { class: 'btn ghost sm', type: 'button' }, T('加载可用模型', 'Load available models'));
-          btn.addEventListener('click', () => loadGithubModels(btn, input, listId));
-          control.append(btn);
-        }
+        control = input;
       }
-      let extra = null;
+      let extra = extraNote;
       if (f.key === 'command' && settings.detect[pid]) {
         const d = settings.detect[pid];
         extra = el(
@@ -1243,17 +1269,21 @@
     return res;
   }
 
-  async function loadGithubModels(btn, input, listId) {
+  // 「加载可用模型」：先保存（用的是保存下来的命令、Key），再问这位成员现在的接入方式能用哪些模型。
+  // 问来的列表服务端会记住（settings.models），下次打开设置还在
+  async function loadModels(btn, id, rerender) {
     const old = btn.textContent;
     btn.disabled = true;
     btn.textContent = T('加载中…', 'Loading...');
     try {
       await saveSettings({ silent: true });
-      const { items } = await api('/api/github-models', {});
-      const dl = document.getElementById(listId);
-      dl.replaceChildren(...items.map((m) => el('option', { value: m.id }, `${m.name}${m.tier ? `（${m.tier}）` : ''}`)));
-      toast(T(`找到 ${items.length} 个模型：点一下模型输入框就能选`, `Found ${items.length} models: click the model box to choose one`), 'ok');
-      input.focus();
+      const r = await api('/api/models', { member: id });
+      settings.models = settings.models || {};
+      settings.models[`${id}|${r.provider}`] = { at: r.at, items: r.items, seen: r.seen };
+      toast(T(`找到 ${r.items.length} 个模型，已经放进「模型」的下拉框`, `Found ${r.items.length} models. They are now in the Model list`), 'ok');
+      // 保存时换了语言的话，整个设置页已经重画过，这个按钮所在的那一块不在页面上了
+      if (btn.isConnected) rerender();
+      else renderSettings();
     } catch (e) {
       showError(e);
     } finally {

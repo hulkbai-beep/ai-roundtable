@@ -5,16 +5,40 @@ const http = require('http');
 function startMockApi() {
   let mode = 'ok';
   const requests = []; // 收到的请求，测试用它来检查图片和文件有没有带上
+  const lists = []; // 问“有哪些模型”的请求，另外记（上面那个，有的测试是数着个数查的）
   const server = http.createServer((req, res) => {
     let body = '';
     req.on('data', (d) => (body += d));
     req.on('end', () => {
       const j = body ? JSON.parse(body) : {};
-      requests.push({ url: req.url, body: j });
       const send = (status, obj) => {
         res.writeHead(status, { 'content-type': 'application/json' });
         res.end(JSON.stringify(obj));
       };
+      // 模型列表：Gemini API（GET /v1beta/models，可能分页）和 OpenAI 格式的接口（GET <接口地址>/models）
+      const { pathname, searchParams } = new URL(req.url, 'http://mock');
+      if (req.method === 'GET' && (pathname === '/v1beta/models' || pathname === '/compat/models')) {
+        lists.push({ url: req.url, key: req.headers['x-goog-api-key'] || req.headers.authorization || '' });
+        if (pathname === '/compat/models') {
+          if (mode === 'models-text') {
+            res.writeHead(200, { 'content-type': 'text/html' });
+            return res.end('<html>It works</html>');
+          }
+          // Ollama 这类本地服务不用 Key；带了就原样记在 lists 里
+          return send(200, { object: 'list', data: [{ id: 'llama-mock:latest', object: 'model', owned_by: 'library' }, { id: 'qwen-mock:8b', object: 'model', owned_by: 'library' }] });
+        }
+        if (req.headers['x-goog-api-key'] !== 'good-key') return send(400, { error: { code: 400, message: 'API key not valid. Please pass a valid API key.', status: 'INVALID_ARGUMENT' } });
+        const gen = ['generateContent', 'countTokens'];
+        const page1 = [
+          { name: 'models/embedding-mock', displayName: 'Embedding Mock', description: 'Embeddings only.', supportedGenerationMethods: ['embedContent'] },
+          { name: 'models/gemini-flash-latest', displayName: 'Gemini Flash Latest', description: 'Latest release of Gemini Flash.', supportedGenerationMethods: gen },
+          { name: 'models/gemini-mock-pro', displayName: 'Gemini Mock Pro', description: 'Our most capable mock model.', supportedGenerationMethods: gen },
+        ];
+        const page2 = [{ name: 'models/gemini-mock-next', displayName: 'Gemini Mock Next', description: 'On the second page.', supportedGenerationMethods: gen }];
+        if (mode === 'models-pages') return send(200, searchParams.get('pageToken') === 'page-2' ? { models: page2 } : { models: page1, nextPageToken: 'page-2' });
+        return send(200, { models: page1 });
+      }
+      requests.push({ url: req.url, body: j });
       if (req.url === '/catalog/models') {
         const models = [
           { id: 'meta/llama-x', name: 'Llama', publisher: 'Meta', rate_limit_tier: 'low' },
@@ -173,6 +197,7 @@ function startMockApi() {
         port: server.address().port,
         setMode: (m) => (mode = m),
         requests,
+        lists,
         close: () => new Promise((r) => server.close(r)),
       })
     );

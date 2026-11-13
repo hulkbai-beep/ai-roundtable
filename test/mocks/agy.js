@@ -8,6 +8,36 @@ if (args[0] === '--version') {
   process.stdout.write('agy 1.4.0\n');
   process.exit(0);
 }
+// agy models：列出这个账号能用的模型。加 --output-format json 时输出 JSON（1.1.12 起），不加时是文字。
+// 官方只说了有这个命令和这个参数，输出具体长什么样没有写：下面两种样子都是猜的，
+// 真机上的样子要从诊断信息里看（lib/model-list.js 的 parseModelList 认得比这里宽）
+if (args[0] === 'models') {
+  const mode = process.env.MOCK_AGY_MODELS;
+  const json = args.includes('--output-format');
+  // 旧版本不认 --output-format
+  if (mode === 'text' && json) {
+    process.stderr.write("error: unknown option '--output-format'\n");
+    process.exit(1);
+  }
+  // 没登录
+  if (mode === 'login') {
+    process.stderr.write('error: You are not signed in. Run agy and sign in with your Google account.\n');
+    process.exit(3);
+  }
+  // 认不出来的输出
+  if (mode === 'weird') {
+    process.stdout.write('Nothing to show here\n');
+    process.exit(0);
+  }
+  const models = [
+    { slug: 'gemini-mock-pro-high', label: 'Gemini Mock Pro (High)', default: true },
+    { slug: 'gemini-mock-pro-low', label: 'Gemini Mock Pro (Low)' },
+    { slug: 'gemini-mock-flash', label: 'Gemini Mock Flash' },
+  ];
+  if (json) process.stdout.write(`${JSON.stringify(models)}\n`);
+  else process.stdout.write(`Available models:\n\n${models.map((m) => `${m.default ? '*' : ' '} ${m.slug.padEnd(24)}${m.label}`).join('\n')}\n`);
+  process.exit(0);
+}
 if (process.env.MOCK_AGY_SILENT) process.exit(0);
 
 const fail = (lines, code = 3) => {

@@ -1058,6 +1058,8 @@ test('模型和思考强度：传给命令行和接口，回复上标出来；�
     assert.strictEqual(gi.model, 'gpt-x');
     assert.strictEqual(gi.config, 'model_reasoning_effort=low');
     assert.strictEqual(gp.meta.effort, '思考低');
+    // 回复上标的是实际用的模型：Claude 的来自 modelUsage，Codex 的来自它开头报的 “model: …”
+    assert.deepStrictEqual([cl.meta.model, gp.meta.model], ['claude-mock', 'gpt-x']);
 
     // 不认识的值不会传下去
     await c.post('/api/config', { members: { claude: { 'claude-cli': { effort: 'bogus' } } } });
@@ -1136,6 +1138,13 @@ test('英文版：界面文字、AI 的人设和错误提示都换成英文，�
     const bad = await c.post('/api/send', { text: '' });
     assert.strictEqual(bad.json.error, 'The message is empty');
     assert.ok((await c.post('/api/test/claude')).json.ok);
+
+    // 模型列表里的说明和报错
+    assert.strictEqual((await c.post('/api/models', { member: 'gemini' })).json.items[0].note, 'default');
+    const none = (await c.post('/api/models', { member: 'claude' })).json;
+    assert.deepStrictEqual([none.error, none.hint], ['This connection type cannot list its models', 'You can skip the list: choose "Custom" under Model and type the model name']);
+    const old = (await withEnv({ MOCK_CODEX_MODELS: 'old' }, () => c.post('/api/models', { member: 'gpt' }))).json;
+    assert.ok(!/[\u4e00-\u9fff]/.test(old.error + old.hint) && old.error.includes('cannot list its models'), old.error);
   } finally {
     cfg = (await c.post('/api/config', { lang: 'zh' })).json;
   }
@@ -1155,6 +1164,167 @@ test('旧版本命令行工具：不认识的参数会自动去掉再试', async
   } finally {
     delete process.env.MOCK_OLD_CLAUDE;
     delete process.env.MOCK_OLD_CODEX;
+  }
+});
+
+const modelsOf = async (key) => (await c.get('/api/config')).json.models[key];
+
+test('模型列表（命令行工具）：Codex 和 Antigravity 列出这个账号能用的模型，记下来；Claude Code 没有这个办法', async () => {
+  // Codex：codex debug models。只要 visibility 是 list 的，按 priority 排
+  const codex = await c.post('/api/models', { member: 'gpt' });
+  assert.strictEqual(codex.status, 200, codex.text);
+  assert.strictEqual(codex.json.provider, 'codex-cli');
+  assert.deepStrictEqual(codex.json.items, [
+    { id: 'gpt-mock', name: '', note: 'Frontier model for complex work.' },
+    { id: 'gpt-mock-mini', name: 'GPT-Mock Mini', note: 'Small, fast and cheap.' },
+  ]);
+  assert.ok(Date.now() - codex.json.at < 60000);
+  // 记进诊断记录：启动的命令、原样输出（很长，只留头尾）、读出来的名字
+  const call = diagCalls().pop();
+  assert.deepStrictEqual([call.member, call.provider, call.kind, call.outcome, call.reply], ['gpt', 'codex-cli', 'models', 'ok', 'gpt-mock\ngpt-mock-mini']);
+  assert.deepStrictEqual(call.runs[0].args, ['debug', 'models']);
+  assert.ok(call.runs[0].stdout.startsWith('{"models":[') && call.runs[0].stdout.includes('chars omitted'));
+
+  // Antigravity：agy models --output-format json
+  const agy = await c.post('/api/models', { member: 'gemini' });
+  assert.strictEqual(agy.status, 200, agy.text);
+  assert.deepStrictEqual(agy.json.items, [
+    { id: 'gemini-mock-pro-high', name: 'Gemini Mock Pro (High)', note: '默认' },
+    { id: 'gemini-mock-pro-low', name: 'Gemini Mock Pro (Low)', note: '' },
+    { id: 'gemini-mock-flash', name: 'Gemini Mock Flash', note: '' },
+  ]);
+  assert.deepStrictEqual(diagCalls().pop().runs[0].args, ['models', '--output-format', 'json']);
+
+  // 下次打开设置还在（/api/config 里带着）
+  assert.deepStrictEqual((await modelsOf('gpt|codex-cli')).items.map((m) => m.id), ['gpt-mock', 'gpt-mock-mini']);
+  assert.strictEqual((await modelsOf('gemini|agy-cli')).items.length, 3);
+  // 换了命令（多半是换了账号）：原来的列表不算了；换回来也不会再冒出来，要重新加载
+  await c.post('/api/config', { members: { gpt: { 'codex-cli': { command: 'codex-other' } } } });
+  assert.strictEqual(await modelsOf('gpt|codex-cli'), undefined);
+  await c.post('/api/config', { members: { gpt: { 'codex-cli': { command: 'codex' } } } });
+  assert.strictEqual((await modelsOf('gpt|codex-cli')).items.length, 2, '设置和加载时一样，列表还算数');
+
+  // Claude Code 没有能列出模型的命令
+  const claude = await c.post('/api/models', { member: 'claude' });
+  assert.strictEqual(claude.status, 400);
+  assert.ok(claude.json.error.includes('没有办法列出模型') && claude.json.hint.includes('自定义'), claude.text);
+  // 要启动程序，所以只收 POST；成员不对也不行
+  assert.strictEqual((await c.get('/api/models')).status, 404);
+  assert.strictEqual((await c.post('/api/models', { member: 'constructor' })).status, 400);
+  assert.strictEqual((await c.post('/api/models', {})).status, 400);
+});
+
+test('模型列表（命令行工具）：旧版本、没登录、看不懂的输出都说清楚，原来的列表不动', async () => {
+  const before = (await modelsOf('gpt|codex-cli')).items;
+  assert.strictEqual(before.length, 2);
+  // 旧版本的 Codex 没有 debug models
+  let r = await withEnv({ MOCK_CODEX_MODELS: 'old' }, () => c.post('/api/models', { member: 'gpt' }));
+  assert.strictEqual(r.status, 400);
+  assert.ok(r.json.error.includes('还不能列出模型') && r.json.hint.includes('npm i -g @openai/codex@latest'), r.text);
+  assert.deepStrictEqual([diagCalls().pop().outcome, diagCalls().pop().runs[0].code], ['error', 2]);
+  // 没登录
+  r = await withEnv({ MOCK_CODEX_MODELS: 'login' }, () => c.post('/api/models', { member: 'gpt' }));
+  assert.ok(r.status === 400 && r.json.error.includes('退出码 1') && r.json.error.includes('Not logged in') && r.json.hint.includes('登录'), r.text);
+  // 列表是空的
+  r = await withEnv({ MOCK_CODEX_MODELS: 'empty' }, () => c.post('/api/models', { member: 'gpt' }));
+  assert.ok(r.status === 400 && r.json.error.includes('是空的') && r.json.hint.includes('自定义'), r.text);
+  assert.deepStrictEqual((await modelsOf('gpt|codex-cli')).items, before, '没加载成功时，原来的列表还在');
+
+  // Antigravity：输出认不出来时，把原样的输出放进报错里
+  r = await withEnv({ MOCK_AGY_MODELS: 'weird' }, () => c.post('/api/models', { member: 'gemini' }));
+  assert.ok(r.status === 400 && r.json.error.includes('Nothing to show here') && r.json.hint.includes('agy models'), r.text);
+  r = await withEnv({ MOCK_AGY_MODELS: 'login' }, () => c.post('/api/models', { member: 'gemini' }));
+  assert.ok(r.status === 400 && r.json.error.includes('退出码 3') && r.json.hint.includes('登录'), r.text);
+  // 旧版本不认 --output-format：去掉以后读文字的列表（这个测试要排在读 JSON 的后面：去掉的参数这次运行里不再加回来）
+  r = await withEnv({ MOCK_AGY_MODELS: 'text' }, () => c.post('/api/models', { member: 'gemini' }));
+  assert.strictEqual(r.status, 200, r.text);
+  assert.deepStrictEqual(r.json.items, [
+    { id: 'gemini-mock-pro-high', name: 'Gemini Mock Pro (High)', note: '默认' },
+    { id: 'gemini-mock-pro-low', name: 'Gemini Mock Pro (Low)', note: '' },
+    { id: 'gemini-mock-flash', name: 'Gemini Mock Flash', note: '' },
+  ]);
+  assert.deepStrictEqual(diagCalls().pop().runs.map((x) => x.args), [['models', '--output-format', 'json'], ['models']]);
+});
+
+test('模型列表（接口）：Gemini API 和自定义接口；Key 不写进诊断信息', async () => {
+  await c.post('/api/config', {
+    members: {
+      gemini: { provider: 'gemini-api', 'gemini-api': { apiKey: 'good-key', baseUrl: `http://127.0.0.1:${api.port}` } },
+      gpt: { provider: 'openai-compatible', 'openai-compatible': { baseUrl: `http://127.0.0.1:${api.port}/compat/`, apiKey: 'sk-compat-key' } },
+    },
+  });
+  try {
+    // Gemini API：只要能聊天的（支持 generateContent），名字去掉 models/
+    let r = await c.post('/api/models', { member: 'gemini' });
+    assert.strictEqual(r.status, 200, r.text);
+    assert.deepStrictEqual(r.json.items, [
+      { id: 'gemini-flash-latest', name: 'Gemini Flash Latest', note: 'Latest release of Gemini Flash.' },
+      { id: 'gemini-mock-pro', name: 'Gemini Mock Pro', note: 'Our most capable mock model.' },
+    ]);
+    const call = diagCalls().pop();
+    assert.deepStrictEqual([call.kind, call.http[0].method, call.http[0].url, call.http[0].status], ['models', 'GET', `http://127.0.0.1:${api.port}/v1beta/models`, 200]);
+    // 有下一页就接着翻
+    api.setMode('models-pages');
+    r = await c.post('/api/models', { member: 'gemini' });
+    assert.deepStrictEqual(r.json.items.map((m) => m.id), ['gemini-flash-latest', 'gemini-mock-pro', 'gemini-mock-next']);
+    assert.ok(api.lists.pop().url.includes('pageToken=page-2'));
+    api.setMode('ok');
+    // Key 不对
+    await c.post('/api/config', { members: { gemini: { 'gemini-api': { apiKey: 'bad-key' } } } });
+    r = await c.post('/api/models', { member: 'gemini' });
+    assert.ok(r.status === 400 && r.json.error.includes('HTTP 400') && r.json.hint.includes('API Key'), r.text);
+    assert.strictEqual(await modelsOf('gemini|gemini-api'), undefined, '换了 Key，原来的列表不算了');
+
+    // 自定义接口：GET <接口地址>/models，带上 Key
+    r = await c.post('/api/models', { member: 'gpt' });
+    assert.strictEqual(r.status, 200, r.text);
+    assert.deepStrictEqual(r.json.items, [
+      { id: 'llama-mock:latest', name: '', note: '' },
+      { id: 'qwen-mock:8b', name: '', note: '' },
+    ]);
+    assert.deepStrictEqual(api.lists.pop(), { url: '/compat/models', key: 'Bearer sk-compat-key' });
+    // 对方给的不是列表
+    api.setMode('models-text');
+    r = await c.post('/api/models', { member: 'gpt' });
+    assert.ok(r.status === 400 && r.json.error.includes('格式看不懂') && r.json.error.includes('It works') && r.json.hint.includes('自定义'), r.text);
+    api.setMode('ok');
+    // 还没填接口地址
+    await c.post('/api/config', { members: { gpt: { 'openai-compatible': { baseUrl: '' } } } });
+    r = await c.post('/api/models', { member: 'gpt' });
+    assert.ok(r.status === 400 && r.json.error.includes('接口地址'), r.text);
+
+    const saved = JSON.stringify(diagCalls()) + require('fs').readFileSync(path.join(app.dataDir, 'models.json'), 'utf8');
+    for (const secret of ['good-key', 'bad-key', 'sk-compat-key']) assert.ok(!saved.includes(secret), `${secret} 不应该出现在诊断记录和 models.json 里`);
+  } finally {
+    api.setMode('ok');
+    await c.post('/api/config', {
+      members: {
+        gemini: { provider: 'agy-cli', 'gemini-api': { apiKey: 'good-key' } },
+        gpt: { provider: 'codex-cli', 'openai-compatible': { baseUrl: '', apiKey: '__CLEAR__' } },
+      },
+    });
+  }
+});
+
+test('实际用的模型：“默认”和 Opus 这样的名字背后是哪个模型，回复一次就记下来', async () => {
+  await c.post('/api/config', { members: { claude: { 'claude-cli': { model: 'opus' } } } });
+  try {
+    // 「保存并测试」算一次：Claude 的来自 modelUsage，Codex 的来自它开头报的 “model: …”
+    const [ct, gt] = [(await c.post('/api/test/claude')).json, (await c.post('/api/test/gpt')).json];
+    assert.deepStrictEqual([ct.ok, ct.model, gt.ok, gt.model], [true, 'claude-mock', true, 'gpt-mock']);
+    assert.strictEqual((await modelsOf('claude|claude-cli')).seen.opus, 'claude-mock');
+    assert.strictEqual((await modelsOf('gpt|codex-cli')).seen[''], 'gpt-mock');
+    // 聊天时也记；Claude Code 这次还用了一个辅助的小模型，记的是主要的那个
+    await c.post('/api/config', { members: { claude: { 'claude-cli': { model: 'sonnet' } } } });
+    await c.post('/api/new');
+    const s = await withEnv({ MOCK_CLAUDE_MODEL_USAGE: '1' }, () => sendAndWait(c, { text: '@Claude 你好' }));
+    assert.strictEqual(aiMessages(s).pop().meta.model, 'claude-mock');
+    assert.deepStrictEqual((({ opus, sonnet }) => ({ opus, sonnet }))((await modelsOf('claude|claude-cli')).seen), { opus: 'claude-mock', sonnet: 'claude-mock' });
+    // 名字和实际用的一样时没什么可记的（agy 不报实际用的模型）
+    assert.ok((await c.post('/api/test/gemini')).json.ok);
+    assert.deepStrictEqual((await modelsOf('gemini|agy-cli')).seen, {});
+  } finally {
+    await c.post('/api/config', { members: { claude: { 'claude-cli': { model: '' } } } });
   }
 });
 
@@ -1196,15 +1366,16 @@ test('GitHub Models（备选）：能用；token 错误、额度用完都有提�
     assert.ok(!limited.ok && limited.hint.includes('额度'));
 
     api.setMode('ok');
-    const list = (await c.post('/api/github-models')).json;
-    assert.strictEqual(list.items[0].id, 'openai/gpt-4.1', 'OpenAI 的模型排在前面');
+    const list = (await c.post('/api/models', { member: 'gpt' })).json;
+    assert.strictEqual(list.provider, 'github-models');
+    assert.deepStrictEqual(list.items[0], { id: 'openai/gpt-4.1', name: 'OpenAI GPT-4.1', note: '限速档位：high' }, 'OpenAI 的模型排在前面');
 
     api.setMode('catalog-envelope');
-    const wrapped = (await c.post('/api/github-models')).json;
+    const wrapped = (await c.post('/api/models', { member: 'gpt' })).json;
     assert.strictEqual(wrapped.items.length, 2, '包了一层 {data: [...]} 的列表也要能读');
 
     api.setMode('catalog-text');
-    const weird = await c.post('/api/github-models');
+    const weird = await c.post('/api/models', { member: 'gpt' });
     assert.strictEqual(weird.status, 400);
     assert.ok(weird.json.error.includes('格式看不懂') && weird.json.error.includes('OK'), weird.json.error);
     assert.ok(!weird.json.error.includes('HTTP 200'), '成功的响应不应该报“请求失败（HTTP 200）”');

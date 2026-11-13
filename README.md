@@ -1,6 +1,6 @@
 # AI 圆桌
 
-**English:** A local group chat where Claude, Gemini and GPT take turns and reply to each other, using your own subscriptions through their official command-line tools. You can attach images and documents (PDF, Word, Excel, PowerPoint, text files) to a message. The app follows your system language; switch any time in Settings → 语言 / Language. This guide is in Chinese for now.
+**English:** A local group chat where Claude, Gemini and GPT take turns and reply to each other, using your own subscriptions through their official command-line tools. You can attach images and documents (PDF, Word, Excel, PowerPoint, text files) to a message. In Settings, "Load available models" lists the models each account can use. The app follows your system language; switch any time in Settings → 语言 / Language. This guide is in Chinese for now.
 
 把 Claude、Gemini、GPT 拉进同一个群聊：你出题，它们轮流发言、互相接话。程序完全在你自己的电脑上运行。
 
@@ -97,6 +97,8 @@ npm i -g @openai/codex
 - 每次打开 AI 圆桌都从一个新的空对话开始；上次的对话自动存进「历史对话」，点开就能接着聊（一句话没说的空对话不会存）。
 - **用量和额度用完**：每条回复旁边会标出这次用了多少 token；右上角「用量」里能看到每位成员最近 5 小时、24 小时、7 天的用量（合计 = 输入 + 输出；带 * 的另有走缓存的输入，它便宜得多，没有算进合计。Claude Code、Codex 和各种接口用的是工具报告的数字；Antigravity CLI 不报告用量，前面带 ≈ 的是按字数估算的）。某位成员的额度用完时，AI 圆桌会响一声，在顶部和聊天里提醒你、把它标成「额度用完」，接下来的发言先跳过它，由其他成员继续聊。读得出恢复时间的话，到时间它会自动回到群里；读不出的话一小时后自动再试（只是请求太频繁的话，过五分钟就再试）。你也可以用 @点名、「保存并测试」或「用量」里的「再试一次」马上再试。把这位成员换成另一种接入方式（比如 GPT 从 Codex 换成 GitHub Models），或者改了它的接入设置（比如换了模型或 Key），也能马上继续。
 - 每位成员可以在设置里选 **模型** 和 **思考强度**（低 / 中 / 高……）。思考强度越高，回复越慢、越耗额度。每条回复旁边会标出用的模型和思考强度。
+  - **有哪些模型可以选？** 在设置里那位成员的「模型」旁边点 **加载可用模型**：AI 圆桌会去问你的账号现在能用哪些（Codex 用 `codex debug models`，Antigravity 用 `agy models`，Gemini API Key、GitHub Models、自定义接口用各自的模型列表接口），放进下拉框里。列表会记住，想更新就再点一次。
+  - **Claude Code 没法列出模型**，下拉框里是它认的几个名字：Opus、Sonnet、Haiku、Fable，各自用最新的版本。具体是哪个版本，它回复过一次（点「保存并测试」也算）之后会显示在名字后面，比如 `Opus · claude-opus-5-5`；“默认”后面显示的也是这样记下来的。想固定某个版本，选“自定义”填完整的名字。**注意 Fable**：它可能不走订阅的额度，而是从你的 usage credits 里扣费，而且 Claude Code 被别的程序调用时不会先问你。
 - 界面有中文和英文两种语言：默认跟随系统，也可以在设置的「语言 / Language」里切换。切到英文后，AI 默认也用英文回复。
 - 设置里还可以：调整排好的发言顺序、暂时关掉某位成员、给某位加「额外人设」（比如“你是一位挑剔的投资人”）。
 

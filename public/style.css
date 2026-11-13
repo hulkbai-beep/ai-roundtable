@@ -1340,23 +1340,23 @@ textarea.input {
   line-height: 1.5;
 }
 
-.with-btn {
-  display: flex;
-  gap: 8px;
-}
-
-.with-btn .input {
-  flex: 1;
-}
-
 .model-pick {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
 .model-pick .input {
-  flex: 1;
+  flex: 1 1 150px;
   min-width: 0;
+}
+
+.model-pick .btn {
+  flex: none;
+}
+
+.model-note {
+  overflow-wrap: anywhere;
 }
 
 .detect {

@@ -1069,3 +1069,164 @@ test('诊断记录：只是旁观，记录出错不影响发言的结果和报�
   assert.strictEqual(nowhere.calls.length, 1);
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('模型列表：每种接入方式的“模型”都是下拉框；能列出模型的才有「加载可用模型」', () => {
+  const { PROVIDERS } = require('../lib/providers');
+  const { canList } = require('../lib/model-list');
+  for (const [pid, p] of Object.entries(PROVIDERS)) {
+    const f = p.fields.find((x) => x.key === 'model');
+    assert.strictEqual(f.type, 'model', pid);
+    assert.strictEqual(Boolean(f.loadModels), canList(pid), pid);
+    // 走接口的每次都要一个明确的模型名字，没有“默认”这一项
+    assert.strictEqual(Boolean(f.noDefault), p.kind === 'http', pid);
+    for (const c of f.choices) assert.ok(Array.isArray(c) && c.length === 2 && typeof c[0] === 'string', pid);
+  }
+  assert.deepStrictEqual(Object.keys(PROVIDERS).filter((pid) => !canList(pid)), ['claude-cli'], 'Claude Code 没有能列出模型的命令');
+  assert.deepStrictEqual(PROVIDERS['claude-cli'].fields.find((x) => x.key === 'model').choices.map(([v]) => v), ['opus', 'sonnet', 'haiku', 'fable']);
+  assert.strictEqual(canList('constructor'), false);
+});
+
+test('模型列表：Codex 的目录只留该出现在列表里的，按 priority 排', () => {
+  const { codexModels, findJson } = require('../lib/model-list');
+  const m = (slug, priority, visibility, extra = {}) => ({ slug, display_name: slug.toUpperCase(), description: `about ${slug}`, priority, visibility, ...extra });
+  const catalog = { models: [m('b', 20, 'list'), m('hidden', 1, 'hide'), m('a', 10, 'list'), m('gone', 5, 'none'), null, { display_name: 'no slug' }] };
+  assert.deepStrictEqual(codexModels(catalog), [
+    { id: 'a', name: 'A', note: 'about a' },
+    { id: 'b', name: 'B', note: 'about b' },
+  ]);
+  // 没有 visibility 这个字段的（别的版本）：全都留着
+  assert.deepStrictEqual(codexModels({ models: [{ slug: 'x' }, { slug: 'y' }] }).map((x) => x.id), ['x', 'y']);
+  assert.strictEqual(codexModels({ error: 'nope' }), null);
+  assert.strictEqual(codexModels(null), null);
+  // 输出前后夹着别的文字时，也找得到那个 JSON
+  assert.deepStrictEqual(findJson('warning: something\n{"models":[]}\n'), { models: [] });
+  assert.deepStrictEqual(findJson('Loading… {"models":[{"slug":"a"}]} done'), { models: [{ slug: 'a' }] });
+  assert.strictEqual(findJson('no json here'), null);
+  assert.strictEqual(findJson(''), null);
+});
+
+test('模型列表：Antigravity 的输出没有文档，JSON 和文字的几种样子都读得出来', () => {
+  const { parseModelList } = require('../lib/model-list');
+  require('../lib/i18n').setLang('zh'); // 前面有的测试启动过整个服务，语言跟着系统变了
+  const ids = (out) => parseModelList(out).map((m) => m.id);
+  // JSON：数组、包一层、字符串、每行一个、名字当键
+  assert.deepStrictEqual(parseModelList('[{"slug":"g-pro-high","label":"G Pro (High)","default":true},{"slug":"g-flash","label":"G Flash","description":"Fast."}]'), [
+    { id: 'g-pro-high', name: 'G Pro (High)', note: '默认' },
+    { id: 'g-flash', name: 'G Flash', note: 'Fast.' },
+  ]);
+  assert.deepStrictEqual(ids('{"models":[{"id":"g-pro","displayName":"G Pro"},{"name":"g-flash"}]}'), ['g-pro', 'g-flash']);
+  assert.deepStrictEqual(ids('{"result":{"models":["g-pro","g-flash",""]}}'), ['g-pro', 'g-flash']);
+  assert.deepStrictEqual(ids('{"type":"model","slug":"g-pro"}\n{"type":"model","slug":"g-flash"}\n{"type":"done"}'), ['g-pro', 'g-flash']);
+  assert.deepStrictEqual(parseModelList('{"g-pro":{"label":"G Pro"},"g-flash":{"label":"G Flash"}}'), [
+    { id: 'g-pro', name: 'G Pro', note: '' },
+    { id: 'g-flash', name: 'G Flash', note: '' },
+  ]);
+  // 文字：标题、分隔线、项目符号、颜色码、默认的记号；几栏之间是制表符或者两个以上的空格
+  const table = ['Available models:', '', '  NAME                SLUG', '  ------------------  ----------', '\u001b[32m* G Pro (High)       g-pro-high\u001b[0m', '  G Flash             g-flash', '', 'Use --model <slug> to pick one.'].join('\n');
+  assert.deepStrictEqual(parseModelList(table), [
+    { id: 'g-pro-high', name: 'G Pro (High)', note: '默认' },
+    { id: 'g-flash', name: 'G Flash', note: '' },
+  ]);
+  assert.deepStrictEqual(parseModelList('g-pro-high\tG Pro (High)\tcurrent\ng-flash\tG Flash\t'), [
+    { id: 'g-pro-high', name: 'G Pro (High)', note: 'current' },
+    { id: 'g-flash', name: 'G Flash', note: '' },
+  ]);
+  assert.deepStrictEqual(ids('- gemini-3.1-pro (default)\n- gemini-3-flash\n• auto-2'), ['gemini-3.1-pro', 'gemini-3-flash', 'auto-2']);
+  // 不是列表的话，一个都不认：提示、报错、一个普通的词
+  for (const out of ['', 'Nothing to show here', 'error: not signed in', 'Loading', 'Done.', 'Usage: agy models [options]', 'Fetching models...  done', 'Total  12', 'NAME  SLUG  DEFAULT', '{"error":{"message":"not signed in"}}', '{"type":"done"}', '42', 'true']) {
+    assert.deepStrictEqual(parseModelList(out), [], out);
+  }
+});
+
+test('实际用的模型：Claude Code 一次回复里有好几个模型时取主要的那个；Codex 只看开头那段信息', () => {
+  const { claudeMainModel, codexHeaderModel } = require('../lib/providers');
+  const usage = (o) => Object.fromEntries(Object.entries(o).map(([k, [costUSD, outputTokens]]) => [k, { costUSD, outputTokens, inputTokens: 10 }]));
+  assert.strictEqual(claudeMainModel({ 'claude-opus-5-5': {} }, 'opus'), 'claude-opus-5-5');
+  assert.strictEqual(claudeMainModel(undefined, 'opus'), '');
+  assert.strictEqual(claudeMainModel({}, ''), '');
+  // 上网时 WebFetch 用小模型读网页，它排在前面也不算
+  const two = usage({ 'claude-haiku-5-5': [0.01, 900], 'claude-opus-5-5': [0.2, 300] });
+  assert.strictEqual(claudeMainModel(two, 'opus'), 'claude-opus-5-5');
+  assert.strictEqual(claudeMainModel(two, 'claude-opus-5-5'), 'claude-opus-5-5');
+  assert.strictEqual(claudeMainModel(two, 'opus[1m]'), 'claude-opus-5-5');
+  assert.strictEqual(claudeMainModel(two, 'haiku'), 'claude-haiku-5-5');
+  // “默认”、或者名字对不上：取花费最多的；没有花费就看输出的 token；都一样时取排在前面的
+  assert.strictEqual(claudeMainModel(two, ''), 'claude-opus-5-5');
+  assert.strictEqual(claudeMainModel(two, 'best'), 'claude-opus-5-5');
+  assert.strictEqual(claudeMainModel(usage({ a: [0, 5], b: [0, 50] }), ''), 'b');
+  assert.strictEqual(claudeMainModel({ a: {}, b: null }, ''), 'a');
+  // 名字对得上两个（两个版本的 Opus）：在这两个里取花费多的
+  assert.strictEqual(claudeMainModel(usage({ 'claude-haiku-5-5': [9, 9], 'claude-opus-5': [0.1, 1], 'claude-opus-5-5': [0.2, 1] }), 'opus'), 'claude-opus-5-5');
+
+  const header = (model) => `OpenAI Codex v0.167.0 (research preview)\n--------\nworkdir: C:\\x\nmodel: ${model}\nprovider: openai\n--------\nuser\nmodel: from-the-prompt\ncodex\nhi\n`;
+  assert.strictEqual(codexHeaderModel(header('gpt-5.5')), 'gpt-5.5');
+  assert.strictEqual(codexHeaderModel(`warning: something\n${header('\u001b[1mgpt-5.5-mini\u001b[0m')}`), 'gpt-5.5-mini');
+  // 开头那段里没有 model：不拿回显的提示词里的那一行顶替
+  assert.strictEqual(codexHeaderModel('OpenAI Codex\n--------\nworkdir: x\n--------\nuser\nmodel: from-the-prompt\n'), '');
+  assert.strictEqual(codexHeaderModel('model: before-the-header\n'), '');
+  assert.strictEqual(codexHeaderModel(''), '');
+  assert.strictEqual(codexHeaderModel(undefined), '');
+});
+
+test('模型记录：列表和实际用的模型跟着设置走，存下来；文件坏了、写不了也不出错', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const { ModelStore } = require('../lib/model-list');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rt-models-'));
+  const file = path.join(dir, 'models.json');
+  const cfg = { command: 'codex', model: '' };
+  const members = { gpt: { provider: 'codex-cli', 'codex-cli': cfg }, claude: { provider: 'claude-cli', 'claude-cli': { command: 'claude' } } };
+  const store = new ModelStore(file);
+  assert.deepStrictEqual(store.view(members), {});
+
+  // 列表：去掉重复的、空的、带换行的；太长的截短
+  const saved = store.setList('gpt', 'codex-cli', cfg, [{ id: 'a', name: 'A', note: 'x'.repeat(500) }, { id: 'a' }, { id: '' }, { id: 'two\nlines' }, null, { id: ' b ', name: 'b' }]);
+  assert.deepStrictEqual(saved.items, [
+    { id: 'a', name: 'A', note: 'x'.repeat(160) },
+    { id: 'b', name: '', note: '' },
+  ]);
+  // 模型很多（OpenRouter 有几百个）时不留说明
+  assert.ok(store.setList('gpt', 'codex-cli', cfg, Array.from({ length: 150 }, (_, i) => ({ id: `m${i}`, note: 'long note' }))).items.every((m) => m.note === ''));
+  store.setList('gpt', 'codex-cli', cfg, [{ id: 'a' }, { id: 'b' }]);
+
+  // 实际用的模型：名字一样、或者没有的不记
+  store.noteSeen('gpt', 'codex-cli', cfg, '', 'gpt-5.5');
+  store.noteSeen('gpt', 'codex-cli', cfg, 'gpt-5.5', 'gpt-5.5');
+  store.noteSeen('gpt', 'codex-cli', cfg, 'x', '');
+  store.noteSeen('gpt', 'codex-cli', cfg, undefined, undefined);
+  store.noteSeen('claude', 'claude-cli', members.claude['claude-cli'], 'opus', 'claude-opus-5-5');
+  assert.deepStrictEqual(store.view(members)['gpt|codex-cli'].seen, { '': 'gpt-5.5' });
+  assert.deepStrictEqual(store.view(members)['claude|claude-cli'], { at: 0, items: [], seen: { opus: 'claude-opus-5-5' } });
+
+  // 重新打开还在；模型、思考强度这些设置变了不影响
+  const again = new ModelStore(file);
+  const view = again.view({ ...members, gpt: { 'codex-cli': { ...cfg, model: 'b', effort: 'high' } } });
+  assert.deepStrictEqual([view['gpt|codex-cli'].items.map((m) => m.id), view['gpt|codex-cli'].seen], [['a', 'b'], { '': 'gpt-5.5' }]);
+  // 换了命令、接口地址或者 Key：原来记的不算了；这时候再记，就从头开始
+  for (const changed of [{ command: 'C:\\other\\codex.exe' }, { command: 'codex', baseUrl: 'http://x' }, { command: 'codex', apiKey: 'k2' }, { command: 'codex', token: 't2' }]) {
+    assert.strictEqual(again.view({ gpt: { 'codex-cli': changed } })['gpt|codex-cli'], undefined, JSON.stringify(changed));
+  }
+  again.noteSeen('gpt', 'codex-cli', { command: 'other' }, '', 'gpt-6');
+  assert.deepStrictEqual(again.view({ gpt: { 'codex-cli': { command: 'other' } } })['gpt|codex-cli'], { at: 0, items: [], seen: { '': 'gpt-6' } });
+  assert.strictEqual(again.view(members)['gpt|codex-cli'], undefined);
+  // Key 本身不存进文件
+  again.setList('gpt', 'openai-compatible', { baseUrl: 'http://x', apiKey: 'sk-very-secret' }, [{ id: 'm' }]);
+  assert.ok(!fs.readFileSync(file, 'utf8').includes('sk-very-secret'));
+
+  // 记的名字有上限：最早的先丢
+  for (let i = 0; i < 60; i++) again.noteSeen('claude', 'claude-cli', { command: 'claude' }, `name-${i}`, `model-${i}`);
+  const seen = again.view(members)['claude|claude-cli'].seen;
+  assert.deepStrictEqual([Object.keys(seen).length, seen['name-59'], seen['name-0']], [40, 'model-59', undefined]);
+
+  // 文件坏了：从空的开始；写不了（目录不存在）、传进来的东西不对：不出错
+  fs.writeFileSync(file, '{"providers": {"gpt|codex-cli": 5, "x": {"key": 7}, "y|z": {"key": "k", "items": "no", "seen": []}}');
+  assert.deepStrictEqual(new ModelStore(file).view(members), {});
+  fs.writeFileSync(file, 'not json');
+  assert.deepStrictEqual(new ModelStore(file).view(members), {});
+  const nowhere = new ModelStore(path.join(dir, 'missing', 'models.json'));
+  assert.strictEqual(nowhere.setList('gpt', 'codex-cli', cfg, [{ id: 'a' }]).items.length, 1);
+  nowhere.noteSeen('gpt', 'codex-cli', null, {}, 5);
+  assert.deepStrictEqual(nowhere.view(null), {});
+  fs.rmSync(dir, { recursive: true, force: true });
+});

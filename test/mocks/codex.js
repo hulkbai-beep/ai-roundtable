@@ -14,6 +14,43 @@ if (args[0] === '--version') {
   process.stdout.write('codex-cli 0.99.0\n');
   process.exit(0);
 }
+// codex debug models：stdout 上一行 JSON（{"models":[…]}），照着 codex-rs/protocol/src/openai_models.rs 的 ModelInfo 写，
+// 只留了一部分字段。真的输出里每个模型都带着一大段 base_instructions，这里也放一段，整个输出有几十 KB。
+// 顺序故意是乱的（界面按 priority 排），还有两个不该出现在列表里的（visibility 不是 list）
+if (args[0] === 'debug' && args[1] === 'models') {
+  // 旧版本没有这个命令
+  if (process.env.MOCK_CODEX_MODELS === 'old') {
+    console.error("error: unrecognized subcommand 'models'\n\nUsage: codex debug [OPTIONS] <COMMAND>\n\nFor more information, try '--help'.");
+    process.exit(2);
+  }
+  // 没登录
+  if (process.env.MOCK_CODEX_MODELS === 'login') {
+    console.error('Error: Not logged in. Run `codex login` first.');
+    process.exit(1);
+  }
+  const efforts = (...list) => list.map((effort) => ({ effort, description: `${effort} effort` }));
+  const model = (slug, display_name, priority, visibility, description, levels) => ({
+    slug,
+    display_name,
+    description,
+    default_reasoning_level: 'medium',
+    supported_reasoning_levels: levels,
+    shell_type: 'shell_command',
+    visibility,
+    supported_in_api: true,
+    priority,
+    base_instructions: 'You are Codex, a coding agent. '.repeat(400),
+  });
+  const models = [
+    model('gpt-mock-mini', 'GPT-Mock Mini', 20, 'list', 'Small, fast and cheap.', efforts('low', 'medium', 'high')),
+    model('gpt-mock-internal', 'gpt-mock-internal', 5, 'hide', 'Not shown in the picker.', efforts('medium')),
+    model('gpt-mock', 'gpt-mock', 10, 'list', 'Frontier model for complex work.', efforts('low', 'medium', 'high', 'xhigh')),
+    model('gpt-mock-old', 'gpt-mock-old', 30, 'none', 'Retired.', efforts('medium')),
+  ];
+  // 输出有几十 KB：等它写完再退出（紧接着 process.exit 的话，管道里没写完的部分会丢）
+  process.stdout.write(`${JSON.stringify(process.env.MOCK_CODEX_MODELS === 'empty' ? { models: [] } : { models })}\n`, () => process.exit(0));
+  return;
+}
 
 // codex 写恢复时间的格式（codex-rs/protocol/src/error.rs 的 format_retry_timestamp）：
 // 当天写 “3:05 PM”，不是当天写 “Jan 2nd, 2026 3:05 PM”
@@ -74,7 +111,8 @@ process.stdin.on('end', () => {
   // 真的 codex 在开始前就把 -o 的文件建好了，失败时里面是空的
   if (o >= 0) fs.writeFileSync(args[o + 1], '');
   err('OpenAI Codex v0.167.0\n--------');
-  err(`workdir: ${process.cwd()}\nmodel: gpt-mock\nprovider: openai\napproval: never\nsandbox: read-only\nreasoning effort: none\nreasoning summaries: auto\nsession id: 0199a213-81c0-7800-8aa1-bbab2a035a53`);
+  // 开头的 model: 是实际用的模型：用 -m 选了就是选的那个，没选是这个账号的默认模型
+  err(`workdir: ${process.cwd()}\nmodel: ${args.includes('-m') ? args[args.indexOf('-m') + 1] : 'gpt-mock'}\nprovider: openai\napproval: never\nsandbox: read-only\nreasoning effort: none\nreasoning summaries: auto\nsession id: 0199a213-81c0-7800-8aa1-bbab2a035a53`);
   err('--------');
   err(`user\n${input}`);
 
