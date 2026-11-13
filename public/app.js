@@ -1406,7 +1406,7 @@
     try {
       const { items } = await api('/api/history');
       if (!items.length) {
-        body.replaceChildren(el('div', { class: 'empty-history' }, T('还没有历史对话。', 'No past chats yet.'), el('br'), T('点「新对话」时，当前对话会自动存到这里。', 'When you start a new chat, the current one is saved here.')));
+        body.replaceChildren(el('div', { class: 'empty-history' }, T('还没有历史对话。', 'No past chats yet.'), el('br'), T('打开程序或点「新对话」时，之前的对话会自动存到这里。', 'When you open the app or start a new chat, the previous one is saved here.')));
         return;
       }
       body.replaceChildren(
