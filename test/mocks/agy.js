@@ -72,7 +72,6 @@ function answer(prompt) {
     lines: prompt.split('\n').length,
     final: prompt.includes('你是这一轮最后一个发言的人') ? true : undefined,
     webRule: /你可以上网|You can use the web/.test(prompt) ? true : undefined,
-    args: args.filter((a, n) => !(i >= 0 && i + 1 < args.length && n === i + 1)), // 除了提示词以外的参数
     chars: prompt.length,
     files: listedFiles(prompt),
   };

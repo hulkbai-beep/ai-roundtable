@@ -887,6 +887,13 @@ test('上网搜索：默认打开，三种命令行工具各用各的办法；�
   const { DEFAULTS } = require('../lib/store');
   assert.strictEqual(DEFAULTS.webSearch, true);
   assert.strictEqual((await c.get('/api/config')).json.config.webSearch, true);
+  // 这位成员最近一次发言启动程序时用的参数，从诊断记录里看（提示词只记了长度，去掉）。
+  // 模拟的工具不把这些写进回复：回复会出现在后面的聊天记录里，关掉上网搜索时要和以前一字不差
+  const argsOf = (member) =>
+    diagCalls()
+      .filter((x) => x.member === member && x.kind === 'chat')
+      .pop()
+      .runs[0].args.filter((a) => !/^<\d+ chars of prompt text>$/.test(a));
   await c.post('/api/new');
   let s = await sendAndWait(c, { text: '今天有什么新闻？', mode: 'discuss', rounds: 1, length: 'short' });
   let [cl, ag, cx] = aiMessages(s).map((m) => parseInfo(m.text, TAGS[m.speaker]));
@@ -895,10 +902,11 @@ test('上网搜索：默认打开，三种命令行工具各用各的办法；�
     { tools: cl.tools, allowedTools: cl.allowedTools, permissionMode: cl.permissionMode, webRule: cl.webRule },
     { tools: 'WebSearch,WebFetch', allowedTools: 'WebSearch,WebFetch', permissionMode: 'default', webRule: true }
   );
-  // Antigravity：没有对应的参数，只在人设里说可以上网
-  assert.deepStrictEqual({ args: ag.args, webRule: ag.webRule }, { args: ['-p'], webRule: true });
+  // Antigravity：没有对应的参数（除了提示词只有 -p），只在人设里说可以上网
+  assert.deepStrictEqual({ args: argsOf('gemini'), webRule: ag.webRule }, { args: ['-p'], webRule: true });
   // Codex：用它自带的搜索，本机的沙箱还是只读
   assert.deepStrictEqual({ webSearch: cx.webSearch, sandbox: cx.sandbox, webRule: cx.webRule }, { webSearch: 'live', sandbox: 'read-only', webRule: true });
+  assert.deepStrictEqual(argsOf('gpt').slice(0, 3), ['exec', '-c', 'web_search=live']);
   // 「保存并测试」用的是和聊天一样的参数
   assert.ok((await c.post('/api/test/claude')).json.ok);
   const tested = diagCalls().pop();
@@ -916,9 +924,13 @@ test('上网搜索：默认打开，三种命令行工具各用各的办法；�
       { tools: cl.tools, toolsDisabled: cl.toolsDisabled, allowedTools: cl.allowedTools, permissionMode: cl.permissionMode, webRule: cl.webRule },
       { tools: '', toolsDisabled: true, allowedTools: undefined, permissionMode: 'default', webRule: undefined }
     );
-    assert.deepStrictEqual({ args: ag.args, webRule: ag.webRule }, { args: ['-p'], webRule: undefined });
+    assert.deepStrictEqual({ args: argsOf('gemini'), webRule: ag.webRule }, { args: ['-p'], webRule: undefined });
     // Codex 新版本不说的话默认用存好的网页（cached），所以关掉时要明说 disabled
-    assert.deepStrictEqual({ webSearch: cx.webSearch, sandbox: cx.sandbox, webRule: cx.webRule }, { webSearch: 'disabled', sandbox: 'read-only', webRule: undefined });
+    assert.deepStrictEqual({ webSearch: cx.webSearch, sandbox: cx.sandbox, webRule: cx.webRule }, { webSearch: undefined, sandbox: 'read-only', webRule: undefined });
+    assert.deepStrictEqual(argsOf('gpt').slice(0, 3), ['exec', '-c', 'web_search=disabled']);
+    // 关着的时候，三位的回复和加这个功能以前一样，没有多出来的字段
+    assert.deepStrictEqual(Object.keys(cx), ['exec', 'sandbox', 'stdinDash', 'hasSystem', 'blocks']);
+    assert.ok(!('webRule' in ag) && !('args' in ag) && !('allowedTools' in cl) && !('webRule' in cl));
     assert.match(await saveDiagnostics(), /^- Web search: off$/m);
   } finally {
     await c.post('/api/config', { webSearch: true });

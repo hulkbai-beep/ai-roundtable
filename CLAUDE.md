@@ -77,6 +77,7 @@
 ## 测试
 
 - `npm test`：单元测试 + 端到端测试（真实的本地服务，加上 `test/mocks/` 里模拟的 claude/agy/codex 和模拟接口）+ 只在 Windows 上运行的参数传递测试。附件的测试在 `test/attachments.test.js`（取文字、保存、提示词）和 `test/attachments-e2e.test.js`（上传到各家收到的整条路）；样本文档在 `test/fixtures/`（真实软件生成的，说明见那里的 README），其他文件用 `test/files.js` 现做。
+- 模拟工具的回复会出现在后面的聊天记录里，有的测试量的是整段提示词的长度（`test/attachments-e2e.test.js` 的“附件很多的长对话”）。Windows 上路径长，那里的余量只有几个字：给模拟工具的回复加字段时，只在新功能打开时才写进去（关着的时候回复要和原来一字不差），启动参数这类东西从诊断记录里看（`diagCalls()` 的 `runs[].args`）。上网搜索那次给 agy 的回复多加了 14 个字，Linux 上通过，Windows 上就超了。
 - `test/packaged-app.test.js`：测试打包后的桌面版（CI 在 Windows 上跑）。本机可以用 `xvfb-run -a node test/packaged-app.test.js -- node_modules/electron/dist/electron --no-sandbox .` 测开发版。
 - 还没有用真实账号测试过真实的 claude / agy / codex / GitHub Models。用户（Windows）的 codex 是用 npm 装的：`%APPDATA%\npm\codex.cmd`。
 
