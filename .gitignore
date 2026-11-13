@@ -5,6 +5,9 @@ dist/
 config.json
 data/
 workspace/
+usage.json
+diagnostics.json
+diagnostics.json.tmp
 
 *.log
 .DS_Store

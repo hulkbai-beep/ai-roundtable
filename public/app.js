@@ -1537,6 +1537,21 @@
       if (!state.messages.length) return toast(T('现在还没有内容可以导出', 'Nothing to export yet'));
       window.location.href = '/api/export';
     });
+    // 诊断信息：先让服务端整理（要跑一遍各工具的 --version，可能要几秒），再像「导出」那样下载整理好的文件
+    $('#btn-diagnostics').addEventListener('click', async (ev) => {
+      const btn = ev.currentTarget;
+      btn.disabled = true;
+      toast(T('正在整理诊断信息……', 'Putting the diagnostics together...'));
+      try {
+        const r = await api('/api/diagnostics', {});
+        window.location.href = r.url;
+        toast(T('诊断信息里有最近聊天的部分内容，发给别人之前先看一遍', 'The diagnostics file contains parts of your recent chats. Read it before you share it'));
+      } catch (e) {
+        showError(e);
+      } finally {
+        btn.disabled = false;
+      }
+    });
     $('#btn-history').addEventListener('click', openHistory);
     $('#btn-usage').addEventListener('click', openUsage);
     $('#btn-settings').addEventListener('click', openSettings);
