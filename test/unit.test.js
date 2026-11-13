@@ -872,12 +872,149 @@ test('打开程序：从一个新的空对话开始，上次的对话存进历�
 test('诊断信息：去掉密钥和网址里的账号密码，长输出只留头尾', () => {
   const { redactMember, redactUrl, clip } = require('../lib/diag');
   const { PROVIDERS } = require('../lib/providers');
-  const out = redactMember({ 'gemini-api': { apiKey: 'AIza-secret', model: 'gemini-flash-latest', baseUrl: 'https://u:p@example.com/x' }, 'agy-cli': { apiKey: '' } }, PROVIDERS);
-  assert.deepStrictEqual(out['gemini-api'], { apiKey: '(set)', model: 'gemini-flash-latest', baseUrl: 'https://***@example.com/x' });
+  const out = redactMember(
+    { 'gemini-api': { apiKey: 'AIza-secret', model: 'gemini-flash-latest', baseUrl: 'https://u:p@example.com/x?key=AIza-secret&alt=json' }, 'agy-cli': { apiKey: '', command: 'agy' }, other: { accessToken: 'abc', maxChars: 5 } },
+    PROVIDERS
+  );
+  assert.deepStrictEqual(out['gemini-api'], { apiKey: '(set)', model: 'gemini-flash-latest', baseUrl: 'https://***@example.com/x?key=***&alt=***' });
+  assert.deepStrictEqual(out['agy-cli'], { apiKey: '', command: 'agy' });
+  assert.deepStrictEqual(out.other, { accessToken: '(set)', maxChars: 5 }, '没有标 secret、但名字像密钥的字段也去掉');
+  assert.ok(!JSON.stringify(out).includes('AIza-secret'));
+  // 代理地址可以不写 http://
   assert.strictEqual(redactUrl('http://user:pass@127.0.0.1:7890'), 'http://***@127.0.0.1:7890');
+  assert.strictEqual(redactUrl('user:pass@127.0.0.1:7890'), '***@127.0.0.1:7890');
   assert.strictEqual(redactUrl('http://127.0.0.1:7890'), 'http://127.0.0.1:7890');
-  const long = `HEAD${'x'.repeat(20000)}TAIL`;
-  const c = clip(long);
+  assert.strictEqual(redactUrl('127.0.0.1:7890'), '127.0.0.1:7890');
+  assert.strictEqual(redactUrl('https://example.com/a@b/c'), 'https://example.com/a@b/c');
+
+  const c = clip(`HEAD${'x'.repeat(20000)}TAIL`);
   assert.ok(c.startsWith('HEAD') && c.endsWith('TAIL') && c.length < 6500 && c.includes('chars omitted'));
   assert.strictEqual(clip('\u001b[31mred\u001b[0m'), 'red');
+  assert.strictEqual(clip(null), '');
+  // 截在表情符号中间时不留半个
+  const loneSurrogate = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
+  const emoji = clip(`a${'😀'.repeat(5000)}b`);
+  assert.ok(emoji.includes('chars omitted') && !loneSurrogate.test(emoji));
+  // 几 MB 带颜色码的输出：只处理留下来的头尾，很快就完
+  const t0 = Date.now();
+  const colored = clip('\u001b[31mx\u001b[0m'.repeat(800000));
+  assert.ok(Date.now() - t0 < 1000, `clip 用了 ${Date.now() - t0} 毫秒`);
+  assert.ok(!colored.includes('\u001b') && colored.length < 6500);
+});
+
+test('诊断记录：超时的程序留下已经输出的内容；同时进行的发言各记各的；只留最近 30 次', async () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const { DiagLog, addRun, report, MAX_CALLS } = require('../lib/diag');
+  const { runAdaptive } = require('../lib/spawn');
+  const { request } = require('../lib/http');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rt-diag-'));
+  const file = path.join(dir, 'diagnostics.json');
+  const log = new DiagLog(file);
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // 程序说了半句就卡住：超时以后，那半句还在记录里（工具卡住之前说了什么，正是要看的）
+  const hang = "process.stdout.write('half an answer'); process.stderr.write('warming up'); setInterval(() => {}, 1000)";
+  await assert.rejects(
+    log.track({ member: 'gemini', provider: 'agy-cli', kind: 'chat' }, () => runAdaptive({ cacheKey: 'diag-test', command: process.execPath, before: ['-e', hang], after: ['x'.repeat(500)], input: 'hello', timeoutMs: 3000 })),
+    /3 秒|3 seconds/
+  );
+  const timedOut = log.calls[0];
+  assert.deepStrictEqual([timedOut.outcome, timedOut.runs.length], ['error', 1]);
+  assert.deepStrictEqual([timedOut.runs[0].stdout, timedOut.runs[0].stderr, timedOut.runs[0].inputChars], ['half an answer', 'warming up', 5]);
+  assert.match(timedOut.runs[0].error, /3 秒|3 seconds/);
+  assert.deepStrictEqual(timedOut.runs[0].args, ['-e', hang, '<500 chars of prompt text>']);
+  assert.ok(timedOut.ms >= 2900);
+  // 被停止的也一样；带在报错上的输出不会被打进日志
+  const stop = new AbortController();
+  setTimeout(() => stop.abort(), 2500);
+  const stopped = await log.track({ member: 'gemini' }, () => runAdaptive({ cacheKey: 'diag-test', command: process.execPath, before: ['-e', hang], signal: stop.signal, timeoutMs: 20000 })).catch((e) => e);
+  assert.strictEqual(stopped.aborted, true);
+  assert.ok(!require('util').inspect(stopped).includes('half an answer') && !JSON.stringify(stopped).includes('half an answer'));
+  assert.deepStrictEqual([log.calls[1].outcome, log.calls[1].runs[0].stdout, log.calls[1].runs[0].error], ['stopped', 'half an answer', 'stopped']);
+  log.calls.pop();
+
+  // 不在一次发言里启动的程序不记（也不出错）
+  addRun({ command: 'stray' });
+  assert.strictEqual(log.calls.length, 1);
+
+  // 两次发言同时进行，各记各的
+  await Promise.all(
+    ['one', 'two'].map((name, i) =>
+      log.track({ member: name }, async () => {
+        await sleep(i ? 5 : 25);
+        addRun({ command: name });
+        await sleep(i ? 25 : 5);
+        addRun({ command: `${name}-again` });
+        return { text: name, usage: { total: i }, meta: { model: name } };
+      })
+    )
+  );
+  for (const name of ['one', 'two']) {
+    const call = log.calls.find((x) => x.member === name);
+    assert.deepStrictEqual(call.runs.map((r) => r.command), [name, `${name}-again`]);
+    assert.deepStrictEqual([call.outcome, call.reply, call.meta], ['ok', name, { model: name }]);
+  }
+
+  // 连不上的接口：记下网址（不带 ? 后面的部分）和原因
+  await assert.rejects(log.track({ member: 'gpt' }, () => request('http://127.0.0.1:1/v1/chat?key=SECRET', { method: 'POST', body: { a: 1 }, timeoutMs: 5000 })));
+  const refused = log.calls[log.calls.length - 1];
+  assert.deepStrictEqual([refused.http.length, refused.http[0].url, refused.http[0].status, refused.http[0].requestChars], [1, 'http://127.0.0.1:1/v1/chat', null, 7]);
+  assert.ok(refused.http[0].error && !JSON.stringify(refused).includes('SECRET'));
+
+  // 只留最近 30 次；存在文件里，重新打开还在
+  for (let i = 0; i < MAX_CALLS + 10; i++) await log.track({ n: i }, async () => ({ text: '' }));
+  assert.strictEqual(log.calls.length, MAX_CALLS);
+  const again = new DiagLog(file);
+  assert.deepStrictEqual([again.calls.length, again.calls[again.calls.length - 1].n], [MAX_CALLS, MAX_CALLS + 9]);
+  assert.ok(!fs.existsSync(`${file}.tmp`));
+
+  // 文件坏了、里面的记录不成样子：留下能用的，其余不要；整理成文件时也不出错
+  fs.writeFileSync(file, '{"calls":[1,null,{"runs":"x"},{"runs":[{}],"http":[{}]},{"runs":[]}]}');
+  const odd = new DiagLog(file);
+  assert.strictEqual(odd.calls.length, 2);
+  const text = report({ version: '0', config: { members: {}, timeoutSec: 1 }, providers: {}, calls: [...odd.calls, null] });
+  assert.ok(text.includes('Recent calls (3') && text.includes('could not be read'));
+  fs.writeFileSync(file, 'not json');
+  assert.strictEqual(new DiagLog(file).calls.length, 0);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('诊断记录：只是旁观，记录出错不影响发言的结果和报错', async () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const { DiagLog } = require('../lib/diag');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rt-diag-'));
+  const log = new DiagLog(path.join(dir, 'diagnostics.json'));
+
+  // “额度用完”的报错里，恢复时间读出来不是一个时间：报错原样交回去（上层靠它标记这位成员）
+  const limit = Object.assign(new Error('limit hit'), { limit: { resetAt: 'not a date', retryInMs: 300000 }, hint: 'wait' });
+  await assert.rejects(log.track({ member: 'claude' }, async () => { throw limit; }), (e) => e === limit);
+  assert.deepStrictEqual([log.calls[0].outcome, log.calls[0].limit, log.calls[0].hint], ['limit', { resetAt: null, retryInMs: 300000 }, 'wait']);
+  const at = Date.UTC(2026, 10, 14, 3, 0);
+  await assert.rejects(log.track({}, async () => { throw Object.assign(new Error('x'), { limit: { resetAt: at } }); }));
+  assert.strictEqual(log.calls[1].limit.resetAt, '2026-11-14T03:00:00.000Z');
+  // 被停止的、抛出来的不是 Error 的
+  await assert.rejects(log.track({}, async () => { throw Object.assign(new Error('已停止'), { aborted: true }); }));
+  assert.strictEqual(log.calls[2].outcome, 'stopped');
+  await assert.rejects(log.track({}, async () => { throw 'plain string'; }), (e) => e === 'plain string'); // eslint-disable-line no-throw-literal
+  assert.deepStrictEqual([log.calls[3].outcome, log.calls[3].error], ['error', 'plain string']);
+
+  // 结果里有存不了的东西（绕回自己的对象）：结果原样返回，以后的记录照常保存
+  const loop = { text: 'ok' };
+  loop.meta = loop;
+  assert.strictEqual(await log.track({}, async () => loop), loop);
+  await log.track({ member: 'after' }, async () => ({ text: 'fine' }));
+  assert.strictEqual(new DiagLog(log.file).calls.pop().member, 'after');
+  // 不是对象的结果
+  assert.strictEqual(await log.track({}, async () => 'just text'), 'just text');
+  assert.strictEqual(await log.track({}, async () => undefined), undefined);
+
+  // 文件写不了（目录不存在）：发言照常
+  const nowhere = new DiagLog(path.join(dir, 'missing', 'diagnostics.json'));
+  assert.deepStrictEqual(await nowhere.track({}, async () => ({ text: 'fine' })), { text: 'fine' });
+  assert.strictEqual(nowhere.calls.length, 1);
+  fs.rmSync(dir, { recursive: true, force: true });
 });

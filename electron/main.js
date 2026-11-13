@@ -280,7 +280,7 @@ if (!gotLock) {
       session.defaultSession.setPermissionRequestHandler((wc, permission, cb) => cb(permission === 'clipboard-sanitized-write'));
       session.defaultSession.on('will-download', (e, item) => {
         // 三种下载：导出对话（Markdown）、诊断信息（Markdown），和聊天记录里的附件（什么类型都有）
-        const isDiag = /\/api\/diagnostics(\?|$)/.test(item.getURL());
+        const isDiag = /\/api\/diagnostics\//.test(item.getURL());
         const isExport = isDiag || /\/api\/export(\?|$)/.test(item.getURL());
         item.setSaveDialogOptions({
           title: isDiag ? tr('保存诊断信息', 'Save diagnostics') : isExport ? tr('导出对话', 'Export chat') : tr('保存附件', 'Save attachment'),

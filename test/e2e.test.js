@@ -351,23 +351,106 @@ test('某位成员出错：显示原因和建议，其他人照常发言', async
   }
 });
 
-test('诊断信息：各工具的版本、每次发言启动的程序和原样输出，提示词只记长度', async () => {
-  const r = await c.get('/api/diagnostics');
+// 诊断记录存在数据目录的 diagnostics.json 里，每次发言结束时写一次
+const diagCalls = () => JSON.parse(require('fs').readFileSync(path.join(app.dataDir, 'diagnostics.json'), 'utf8')).calls;
+const saveDiagnostics = async () => {
+  const made = await c.post('/api/diagnostics', {});
+  assert.strictEqual(made.status, 200);
+  assert.match(made.json.url, /^\/api\/diagnostics\/[0-9a-f]{32}$/);
+  const r = await c.get(made.json.url);
   assert.strictEqual(r.status, 200);
   assert.match(r.headers['content-disposition'], /^attachment; filename="ai-roundtable-diagnostics-\d{4}-\d\d-\d\d\.md"$/);
-  const t = r.text;
+  return r.text;
+};
+
+test('诊断信息：各工具的版本、每次发言启动的程序和原样输出，提示词只记长度', async () => {
+  const BIN = { claude: 'claude', gemini: 'agy', gpt: 'codex' };
+  // 连接测试也记
+  assert.strictEqual((await c.post('/api/test/claude')).json.ok, true);
+  assert.deepStrictEqual(
+    (({ member, provider, kind, outcome }) => ({ member, provider, kind, outcome }))(diagCalls().pop()),
+    { member: 'claude', provider: 'claude-cli', kind: 'test', outcome: 'ok' }
+  );
+
+  // 三位同时回答：每次发言只记自己启动的那个程序，不会记串
+  await c.post('/api/new');
+  await withEnv({ MOCK_DELAY: '300' }, () => sendAndWait(c, { text: '诊断测试：三位一起回答', mode: 'independent', rounds: 1 }));
+  const three = diagCalls().slice(-3);
+  assert.deepStrictEqual(three.map((x) => x.member).sort(), ALL);
+  for (const call of three) {
+    assert.deepStrictEqual([call.kind, call.outcome], ['chat', 'ok']);
+    assert.deepStrictEqual(
+      call.runs.map((r) => [r.command, r.code]),
+      [[BIN[call.member], 0]],
+      call.member
+    );
+    assert.ok(call.replyChars > 0 && call.reply.includes(TAGS[call.member]), '取出来的回复也记了一段');
+  }
+
+  // agy 什么都没输出：记成 error，退出码 0，输出是空的
+  await withEnv({ MOCK_AGY_SILENT: '1' }, () => sendAndWait(c, { text: '@Gemini 诊断测试：你来说', rounds: 1 }));
+  const silent = diagCalls().pop();
+  assert.deepStrictEqual([silent.member, silent.outcome, silent.runs.length], ['gemini', 'error', 1]);
+  assert.deepStrictEqual([silent.runs[0].code, silent.runs[0].stdout, silent.runs[0].stderr], [0, '', '']);
+  assert.match(silent.error, /Antigravity CLI/);
+
+  const t = await saveDiagnostics();
   for (const v of ['2.1.300 (Claude Code)', 'agy 1.4.0', 'codex-cli 0.99.0']) assert.ok(t.includes(v), v);
-  // 上一个测试里 agy 什么都没输出，记成 error，退出码 0
+  assert.match(t, /claude via claude-cli \(test\): ok/);
   assert.match(t, /claude via claude-cli \(chat\): ok/);
   assert.match(t, /gemini via agy-cli \(chat\): error/);
-  assert.match(t, /Antigravity CLI[^\n]*\n[^]*?#### Run 1: exit 0/);
   // Claude 的原样输出（JSON）在里面；人设和 agy 的提示词这种长参数只记长度
   assert.ok(t.includes('"type":"result"') || t.includes('"type": "result"'));
   assert.match(t, /<\d+ chars of prompt text>/);
-  // 存在数据目录里，重启后还在
-  const saved = JSON.parse(require('fs').readFileSync(path.join(app.dataDir, 'diagnostics.json'), 'utf8'));
-  assert.ok(saved.calls.length > 0 && saved.calls.length <= 30);
-  assert.ok(saved.calls.every((x) => Array.isArray(x.runs)));
+  for (const call of diagCalls()) for (const r of call.runs) assert.ok(r.args.every((a) => a.length <= 200), `参数太长：${r.command}`);
+});
+
+test('诊断信息：整理要用 POST（别的网页没法触发），下载地址猜不到', async () => {
+  // 直接 GET 不会去启动各个工具；乱猜的地址也拿不到
+  assert.strictEqual((await c.get('/api/diagnostics')).status, 404);
+  assert.strictEqual((await c.get(`/api/diagnostics/${'0'.repeat(32)}`)).status, 404);
+  // 同时点两次：两边拿到的地址都能下载
+  const [a, b] = await Promise.all([c.post('/api/diagnostics', {}), c.post('/api/diagnostics', {})]);
+  assert.strictEqual((await c.get(a.json.url)).status, 200);
+  assert.strictEqual((await c.get(b.json.url)).status, 200);
+  // 再整理一次，旧地址就作废了
+  const next = await c.post('/api/diagnostics', {});
+  assert.notStrictEqual(next.json.url, a.json.url);
+  assert.strictEqual((await c.get(a.json.url)).status, 404);
+  assert.strictEqual((await c.get(next.json.url)).status, 200);
+});
+
+test('诊断信息：走接口的发言记下对方原样返回的内容，Token 不写进去', async () => {
+  await c.post('/api/config', { members: { gpt: { provider: 'github-models' } } });
+  try {
+    assert.strictEqual((await c.post('/api/test/gpt')).json.ok, true);
+    const ok = diagCalls().pop();
+    assert.deepStrictEqual([ok.member, ok.provider, ok.outcome, ok.runs.length, ok.http.length], ['gpt', 'github-models', 'ok', 0, 1]);
+    assert.deepStrictEqual(
+      [ok.http[0].method, ok.http[0].url, ok.http[0].status],
+      ['POST', `http://127.0.0.1:${api.port}/inference/chat/completions`, 200]
+    );
+    assert.ok(ok.http[0].requestChars > 0 && ok.http[0].body.includes('"usage"'));
+
+    // 对方报错（429）：状态码、Retry-After 和原样的报错都在
+    api.setMode('429');
+    try {
+      assert.strictEqual((await c.post('/api/test/gpt')).json.ok, false);
+    } finally {
+      api.setMode('ok');
+    }
+    const limited = diagCalls().pop();
+    assert.deepStrictEqual([limited.outcome, limited.http[0].status, limited.http[0].headers['retry-after']], ['limit', 429, '120']);
+    assert.ok(limited.http[0].body.includes('Rate limit of 50'));
+
+    const t = await saveDiagnostics();
+    assert.match(t, /"token": "\(set\)"/);
+    assert.match(t, /Request 1: POST http:\/\/127\.0\.0\.1:\d+\/inference\/chat\/completions → 429/);
+    assert.ok(!t.includes('good-token') && !JSON.stringify(diagCalls()).includes('good-token'), 'Token 不应该出现在诊断信息里');
+  } finally {
+    await c.post('/api/usage/retry', { member: 'gpt' });
+    await c.post('/api/config', { members: { gpt: { provider: 'codex-cli' } } });
+  }
 });
 
 test('用量：记下每位成员用了多少 token，回复上标出来', async () => {

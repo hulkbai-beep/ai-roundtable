@@ -11,7 +11,13 @@
 - `lib/providers.js`：各种接入方式。`lib/prompt.js`：人设和聊天记录拼装（太长时保留第一条话题和最近的消息）。
 - `lib/spawn.js`：Windows 上启动命令行工具（见下文）。
 - `lib/usage.js`：每次发言用了多少 token、谁的额度用完了（存在 `usage.json`）。`lib/limits.js`：从工具的报错里认出“额度用完了”，读出什么时候恢复。
-- `lib/diag.js`：诊断记录。每次发言（`callProvider` 里的 `diag.track`）启动了哪些程序、参数（长参数只记长度）、退出码、stdout / stderr 原样（太长的只留头尾），存在 `diagnostics.json`，只留最近 30 次。`spawn.js` 的 `runAdaptive` 每启动一次程序记一条，两边靠 AsyncLocalStorage 连起来。设置底部的「保存诊断信息」下载 `GET /api/diagnostics`：再加上各工具 `--version` 的输出和各成员的设置（标了 secret 的字段和网址里的账号密码去掉）。用来对照真机上各工具的真实输出；改 providers 时不用管它。
+- `lib/diag.js`：诊断记录，用来对照真机上各工具的真实输出。
+  - 每次发言（`callProvider` 里的 `diag.track`，聊天和「保存并测试」都算）记一条：启动了哪些程序（`spawn.js` 的 `runAdaptive` 每启动一次记一次，参数不被认、去掉一组重来的也各记一次）、参数（超过 200 字的是提示词，只记长度）、退出码、stdout / stderr 原样（太长的留开头 2000 字和结尾 4000 字）；走接口的记网址（只到路径）、状态码、几个和限流有关的响应头、返回的内容，请求头和请求内容不记。超时、被停止的程序，到那时为止的输出由 `runProcess` 带在报错的 `e.partial` 上。
+  - 发言和它启动的程序靠 AsyncLocalStorage 连起来，所以各种接入方式的代码不用改，几位成员同时回答也不会记串；HTTP 请求在发出的那一刻就认准是哪次发言（`httpRecorder`），因为回应是在网络事件里收到的。
+  - **它只是旁观**：记录时出任何错都不能改变发言的结果或报错（上层靠 `e.limit` 标记“额度用完”），所以 `track` / `addRun` 里都包着 try / catch。改这个文件时保持这一点，`test/unit.test.js` 里有专门的测试。
+  - 存在数据目录的 `diagnostics.json`，只留最近 30 次。里面有聊天内容，和 `usage.json` 一样已加入 .gitignore。
+  - 设置左下角的「保存诊断信息」分两步：`POST /api/diagnostics` 整理（再跑一遍各工具的 `--version`，加上各成员现在用的设置，标了 secret 的字段、网址里的账号密码和 `?` 后面的值都去掉），返回一个猜不到的地址；`GET /api/diagnostics/<id>` 下载。整理要启动程序，所以必须是 POST（GET 不带 Origin 也放行，别的网页能让浏览器替它发）；下载走普通网址，和「导出」是同一条路，桌面版的保存对话框挂在 `will-download` 上。
+  - 文件正文是英文的（给开发者看），只有“发之前先看一遍”这类提醒跟着界面语言走。
 - `lib/attachments.js`：附件的类型判断（看文件开头的字节，不信扩展名）、保存和取用，文件在 `workspace/attachments/`。`lib/doc-text.js`（zip + docx / xlsx / pptx + 文本编码）和 `lib/pdf-text.js` 负责取文字，全部自己解析。
 - `public/`：原生 HTML/CSS/JS，不依赖任何框架；Markdown 渲染是自己写的，先转义再排版。
 
