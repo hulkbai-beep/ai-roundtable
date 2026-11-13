@@ -38,7 +38,9 @@ function listedFiles(prompt) {
 if (process.env.MOCK_CLAUDE_DENY) {
   process.stdin.resume();
   process.stdin.on('end', () => {
-    process.stdout.write(`${JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: '我打不开这些文件。', permission_denials: [{ tool_name: 'Read' }] })}\n`);
+    // MOCK_CLAUDE_DENY=web：被拒绝的是上网的工具
+    const tool_name = process.env.MOCK_CLAUDE_DENY === 'web' ? 'WebFetch' : 'Read';
+    process.stdout.write(`${JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: '我打不开这些文件。', permission_denials: [{ tool_name }] })}\n`);
   });
   return;
 }
@@ -57,7 +59,10 @@ process.stdin.on('end', () => {
     toolsDisabled: tools >= 0 && args[tools + 1] === '',
     tools: tools >= 0 ? args[tools + 1] : undefined,
     permissionMode: argAfter('--permission-mode'),
+    allowedTools: argAfter('--allowedTools'),
     filesRule: sys >= 0 && args[sys + 1].includes('除了查看主持人发来的附件') ? true : undefined,
+    // 人设里“你可以上网”那一条：带附件时写的是“除了上网和查看主持人发来的附件……”，报 'files'
+    webRule: sys < 0 || !/你可以上网|You can use the web/.test(args[sys + 1]) ? undefined : /除了上网和查看主持人发来的附件|Apart from the web and the attachments/.test(args[sys + 1]) ? 'files' : true,
     files: listedFiles(input),
     attachments: (input.match(/^<附件 编号="\d+"/gm) || []).length || undefined,
     stdinHasSystem: input.includes('你是 Claude'),

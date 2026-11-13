@@ -114,6 +114,7 @@ process.stdin.on('end', () => {
     return;
   }
 
+  const configs = args.filter((a, i) => args[i - 1] === '-c');
   const info = {
     exec: args[0] === 'exec',
     sandbox: args[args.indexOf('--sandbox') + 1],
@@ -121,7 +122,10 @@ process.stdin.on('end', () => {
     hasSystem: input.includes('你是 GPT'),
     blocks: (input.match(/^【[^】\n]+】$/gm) || []).length,
     model: args.includes('-m') ? args[args.indexOf('-m') + 1] : undefined,
-    config: args.includes('-c') ? args[args.indexOf('-c') + 1] : undefined,
+    // -c 后面的设置：web_search=…（live：上网搜索；disabled：关掉）单独报，其余的报第一个
+    config: configs.find((v) => !v.startsWith('web_search=')),
+    webSearch: (configs.filter((v) => v.startsWith('web_search=')).pop() || '').slice('web_search='.length) || undefined,
+    webRule: /你可以上网|You can use the web/.test(input) ? true : undefined,
     images: args.includes('--image') ? imageArgs() : undefined,
     files: listedFiles(input),
   };

@@ -73,7 +73,14 @@ function startMockApi() {
         if (j.reasoning_effort && !/\/o\d/.test(j.model)) return send(400, { error: { message: "Unsupported parameter: 'reasoning_effort' is not supported with this model." } });
         if (refuse) return send(refuse[0], { error: { message: refuse[1] } });
         const user = Array.isArray(raw) ? raw.map((p) => p.text || '').join('\n') : raw;
-        const info = { model: j.model, effort: j.reasoning_effort, system: j.messages.some((m) => m.role === 'system' && m.content.includes('你是 GPT')), blocks: (user.match(/^【[^】\n]+】$/gm) || []).length };
+        const info = {
+          model: j.model,
+          effort: j.reasoning_effort,
+          system: j.messages.some((m) => m.role === 'system' && m.content.includes('你是 GPT')),
+          blocks: (user.match(/^【[^】\n]+】$/gm) || []).length,
+          webRule: /你可以上网|You can use the web/.test(JSON.stringify(j.messages)) ? true : undefined,
+          tools: j.tools ? Object.keys(j.tools).length : undefined,
+        };
         const content = user.includes('请只回复两个字') ? '在线' : `GPT：MOCK-GPT ${JSON.stringify(info)}`;
         return send(200, { model: j.model, choices: [{ message: { role: 'assistant', content }, finish_reason: 'stop' }], usage: { prompt_tokens: 300, completion_tokens: 40, total_tokens: 340, ...(mode === 'cached' ? { prompt_tokens_details: { cached_tokens: 200 } } : {}) } });
       }
@@ -109,6 +116,16 @@ function startMockApi() {
             },
           });
         }
+        // 上网搜索的两个工具（google_search、url_context）。不支持的模型报 400：
+        //   no-url-context：只是不能打开网址；no-search：搜索也不行；tools-other：报错里提到 tool，其实是别的原因（去掉工具也没用）
+        const tools = Array.isArray(j.tools) ? j.tools.flatMap((t) => Object.keys(t)) : [];
+        if (mode === 'tools-other') return send(400, { error: { code: 400, status: 'INVALID_ARGUMENT', message: 'Tool use is not available right now.' } });
+        if (tools.includes('url_context') && (mode === 'no-url-context' || mode === 'no-search')) return send(400, { error: { code: 400, status: 'INVALID_ARGUMENT', message: 'Browse tool is not supported.' } });
+        if (tools.includes('google_search') && mode === 'no-search') return send(400, { error: { code: 400, status: 'INVALID_ARGUMENT', message: 'Search Grounding is not supported.' } });
+        // search-quota：搜索自己的额度用完了，不带搜索的请求照常（这句报错是照着别的额度报错的样子写的，没有见过原文）
+        if (tools.includes('google_search') && mode === 'search-quota') {
+          return send(429, { error: { code: 429, status: 'RESOURCE_EXHAUSTED', message: 'You exceeded your current quota. Quota exceeded for metric: generativelanguage.googleapis.com/grounding_with_google_search_requests, limit: 0' } });
+        }
         const level = j.generationConfig && j.generationConfig.thinkingConfig && j.generationConfig.thinkingConfig.thinkingLevel;
         const inline = j.contents[0].parts.filter((p) => p.inlineData).map((p) => p.inlineData.mimeType);
         const refuse =
@@ -123,8 +140,29 @@ function startMockApi() {
         if (level && /lite/.test(g[1])) return send(400, { error: { message: 'Thinking level is not supported for this model.' } });
         if (refuse) return send(refuse[0], { error: refuse[1] });
         const text = j.contents[0].parts[0].text;
-        const reply = text.includes('请只回复两个字') ? '在线' : `MOCK-GEMINI-API ${JSON.stringify({ system: !!j.systemInstruction, level })}`;
-        return send(200, { modelVersion: g[1], usageMetadata: { promptTokenCount: 200, candidatesTokenCount: 30, thoughtsTokenCount: 20, totalTokenCount: 250, ...(mode === 'cached' ? { cachedContentTokenCount: 150 } : {}) }, candidates: [{ content: { parts: [{ text: '（思考过程）', thought: true }, { text: reply }] } }] });
+        const sys = j.systemInstruction ? JSON.stringify(j.systemInstruction) : '';
+        const webRule = /你可以上网|You can use the web/.test(sys) ? true : undefined;
+        const reply = text.includes('请只回复两个字') ? '在线' : `MOCK-GEMINI-API ${JSON.stringify({ system: !!j.systemInstruction, level, tools: tools.length ? tools : undefined, webRule })}`;
+        // grounded：这次用了搜索，查到的网页在 groundingMetadata 里（网址是 Google 的跳转地址，标题是网站的域名）。
+        // 里面故意放了重复的、不是网址的、标题和网址里带括号的几项
+        const grounding =
+          mode === 'grounded' && tools.includes('google_search')
+            ? {
+                groundingMetadata: {
+                  webSearchQueries: ['周末 天气'],
+                  groundingChunks: [
+                    { web: { uri: 'https://vertexaisearch.cloud.google.com/grounding-api-redirect/AbC123', title: 'weather.example.com' } },
+                    { web: { uri: 'https://example.org/wiki/Rain_(weather)', title: 'Rain [weather]\n- Example' } },
+                    { web: { uri: 'https://vertexaisearch.cloud.google.com/grounding-api-redirect/AbC123', title: 'weather.example.com' } },
+                    { web: { uri: 'javascript:alert(1)', title: 'bad' } },
+                    { web: { uri: 'https://no-title.example.net/page' } },
+                    { retrievedContext: { uri: 'gs://bucket/file', title: 'not web' } },
+                    null,
+                  ],
+                },
+              }
+            : {};
+        return send(200, { modelVersion: g[1], usageMetadata: { promptTokenCount: 200, candidatesTokenCount: 30, thoughtsTokenCount: 20, totalTokenCount: 250, ...(mode === 'cached' ? { cachedContentTokenCount: 150 } : {}) }, candidates: [{ content: { parts: [{ text: '（思考过程）', thought: true }, { text: reply }] }, ...grounding }] });
       }
       send(404, {});
     });

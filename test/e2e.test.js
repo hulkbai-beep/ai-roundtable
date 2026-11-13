@@ -97,9 +97,11 @@ test('两轮讨论：每人轮流发言，后面的人能看到前面的发言�
   const c1 = parseInfo(ai[0].text, 'MOCK-CLAUDE');
   assert.ok(!ai[0].text.startsWith('Claude：'), '名字前缀应该被去掉');
   assert.deepStrictEqual(
-    { print: c1.print, json: c1.json, systemArg: c1.systemArg, toolsDisabled: c1.toolsDisabled, stdinHasSystem: c1.stdinHasSystem, quote: c1.quote },
-    { print: true, json: true, systemArg: true, toolsDisabled: true, stdinHasSystem: false, quote: true }
+    { print: c1.print, json: c1.json, systemArg: c1.systemArg, stdinHasSystem: c1.stdinHasSystem, quote: c1.quote },
+    { print: true, json: true, systemArg: true, stdinHasSystem: false, quote: true }
   );
+  // 上网搜索默认是打开的：只开上网的两个工具，别的工具一个都没有（关掉的情况见后面“上网搜索”的测试）
+  assert.deepStrictEqual({ tools: c1.tools, permissionMode: c1.permissionMode }, { tools: 'WebSearch,WebFetch', permissionMode: 'default' });
   assert.ok(c1.systemLines > 5, '多行的人设应该完整传给 claude');
   assert.strictEqual(c1.blocks, 1);
 
@@ -109,7 +111,7 @@ test('两轮讨论：每人轮流发言，后面的人能看到前面的发言�
   assert.ok(g1.lines > 10, '多行提示词应该完整传给 agy');
 
   const p1 = parseInfo(ai[2].text, 'MOCK-CODEX');
-  assert.deepStrictEqual(p1, { exec: true, sandbox: 'read-only', stdinDash: true, hasSystem: true, blocks: 3 });
+  assert.deepStrictEqual(p1, { exec: true, sandbox: 'read-only', stdinDash: true, hasSystem: true, blocks: 3, webSearch: 'live', webRule: true });
 
   assert.strictEqual(parseInfo(ai[3].text, 'MOCK-CLAUDE').blocks, 4);
   assert.strictEqual(parseInfo(ai[5].text, 'MOCK-CODEX').blocks, 6);
@@ -880,6 +882,150 @@ test('请求内容必须是一个对象：null、数组、数字都回 400，不
   assert.deepStrictEqual((await c.get('/api/config')).json.config, before);
 });
 
+// “上网搜索”的这几个测试要排在模拟旧版本工具的测试前面：不认的参数一旦去掉，这次运行里就不再加回来（spawn.js 的 droppedGroups）
+test('上网搜索：默认打开，三种命令行工具各用各的办法；关掉以后和原来一样不开工具', async () => {
+  const { DEFAULTS } = require('../lib/store');
+  assert.strictEqual(DEFAULTS.webSearch, true);
+  assert.strictEqual((await c.get('/api/config')).json.config.webSearch, true);
+  await c.post('/api/new');
+  let s = await sendAndWait(c, { text: '今天有什么新闻？', mode: 'discuss', rounds: 1, length: 'short' });
+  let [cl, ag, cx] = aiMessages(s).map((m) => parseInfo(m.text, TAGS[m.speaker]));
+  // Claude Code：只开上网的两个工具，并事先批准这两个；权限模式照旧明说 default
+  assert.deepStrictEqual(
+    { tools: cl.tools, allowedTools: cl.allowedTools, permissionMode: cl.permissionMode, webRule: cl.webRule },
+    { tools: 'WebSearch,WebFetch', allowedTools: 'WebSearch,WebFetch', permissionMode: 'default', webRule: true }
+  );
+  // Antigravity：没有对应的参数，只在人设里说可以上网
+  assert.deepStrictEqual({ args: ag.args, webRule: ag.webRule }, { args: ['-p'], webRule: true });
+  // Codex：用它自带的搜索，本机的沙箱还是只读
+  assert.deepStrictEqual({ webSearch: cx.webSearch, sandbox: cx.sandbox, webRule: cx.webRule }, { webSearch: 'live', sandbox: 'read-only', webRule: true });
+  // 「保存并测试」用的是和聊天一样的参数
+  assert.ok((await c.post('/api/test/claude')).json.ok);
+  const tested = diagCalls().pop();
+  assert.strictEqual(tested.kind, 'test');
+  assert.ok(tested.runs[0].args.join(' ').includes('--tools WebSearch,WebFetch --permission-mode default --allowedTools WebSearch,WebFetch'), tested.runs[0].args.join(' '));
+  assert.match(await saveDiagnostics(), /^- Web search: on$/m);
+
+  const off = await c.post('/api/config', { webSearch: false });
+  assert.strictEqual(off.json.config.webSearch, false, '设置要能存住');
+  try {
+    await c.post('/api/new');
+    s = await sendAndWait(c, { text: '今天有什么新闻？', mode: 'discuss', rounds: 1, length: 'short' });
+    [cl, ag, cx] = aiMessages(s).map((m) => parseInfo(m.text, TAGS[m.speaker]));
+    assert.deepStrictEqual(
+      { tools: cl.tools, toolsDisabled: cl.toolsDisabled, allowedTools: cl.allowedTools, permissionMode: cl.permissionMode, webRule: cl.webRule },
+      { tools: '', toolsDisabled: true, allowedTools: undefined, permissionMode: 'default', webRule: undefined }
+    );
+    assert.deepStrictEqual({ args: ag.args, webRule: ag.webRule }, { args: ['-p'], webRule: undefined });
+    // Codex 新版本不说的话默认用存好的网页（cached），所以关掉时要明说 disabled
+    assert.deepStrictEqual({ webSearch: cx.webSearch, sandbox: cx.sandbox, webRule: cx.webRule }, { webSearch: 'disabled', sandbox: 'read-only', webRule: undefined });
+    assert.match(await saveDiagnostics(), /^- Web search: off$/m);
+  } finally {
+    await c.post('/api/config', { webSearch: true });
+  }
+});
+
+test('上网搜索：Claude Code 不让用上网的工具时，在回复上注明', async () => {
+  await c.post('/api/new');
+  await withEnv({ MOCK_CLAUDE_DENY: 'web' }, async () => {
+    const s = await sendAndWait(c, { text: '@Claude 查一下' });
+    assert.strictEqual(aiMessages(s).pop().meta.note, 'Claude Code 没有权限上网');
+  });
+  // 没有打开上网搜索时，同样的输出不用提
+  await c.post('/api/config', { webSearch: false });
+  try {
+    await withEnv({ MOCK_CLAUDE_DENY: 'web' }, async () => {
+      const s = await sendAndWait(c, { text: '@Claude 再说一遍' });
+      assert.strictEqual(aiMessages(s).pop().meta.note, '');
+    });
+  } finally {
+    await c.post('/api/config', { webSearch: true });
+  }
+});
+
+test('上网搜索（接口）：Gemini API 带上搜索的工具并列出来源，模型不支持时去掉重试；GitHub Models 不支持', async () => {
+  const geminiRequests = () => api.requests.filter((r) => r.url.includes(':generateContent'));
+  const toolsOf = (r) => (r.body.tools || []).flatMap((t) => Object.keys(t));
+  await c.post('/api/config', { members: { gemini: { provider: 'gemini-api', 'gemini-api': { apiKey: 'good-key', baseUrl: `http://127.0.0.1:${api.port}` } }, gpt: { provider: 'github-models' } } });
+  try {
+    await c.post('/api/new');
+    // 用了搜索：查到的网页列在回复后面（重复的、不是网址的不要；标题里的方括号、网址里的括号换掉，界面上才是链接）
+    api.setMode('grounded');
+    let s = await sendAndWait(c, { text: '@Gemini 周末天气怎么样？' });
+    let ge = aiMessages(s).pop();
+    assert.deepStrictEqual(toolsOf(geminiRequests().pop()), ['google_search', 'url_context']);
+    const [reply, sources] = ge.text.split('\n\n来源：\n');
+    assert.deepStrictEqual(parseInfo(reply, 'MOCK-GEMINI-API'), { system: true, tools: ['google_search', 'url_context'], webRule: true });
+    assert.deepStrictEqual(sources.split('\n'), [
+      '- [weather.example.com](https://vertexaisearch.cloud.google.com/grounding-api-redirect/AbC123)',
+      '- [Rain weather - Example](https://example.org/wiki/Rain_%28weather%29)',
+      '- [no-title.example.net](https://no-title.example.net/page)',
+    ]);
+    assert.strictEqual(ge.meta.note, '');
+
+    // 没有用搜索的回复后面什么都不加
+    api.setMode('ok');
+    s = await sendAndWait(c, { text: '@Gemini 你好' });
+    assert.ok(!aiMessages(s).pop().text.includes('来源'));
+
+    // 模型不能打开网址：去掉 url_context，搜索留着，不用注明
+    api.setMode('no-url-context');
+    let before = geminiRequests().length;
+    s = await sendAndWait(c, { text: '@Gemini 再查一下' });
+    ge = aiMessages(s).pop();
+    assert.deepStrictEqual(geminiRequests().slice(before).map(toolsOf), [['google_search', 'url_context'], ['google_search']]);
+    assert.strictEqual(ge.meta.note, '');
+
+    // 模型不能搜索：都去掉，回复上注明；人设里说的是可以上网，所以要让主持人知道这次其实不行
+    api.setMode('no-search');
+    before = geminiRequests().length;
+    s = await sendAndWait(c, { text: '@Gemini 再查一下' });
+    ge = aiMessages(s).pop();
+    assert.deepStrictEqual(geminiRequests().slice(before).map(toolsOf), [['google_search', 'url_context'], ['google_search'], []]);
+    assert.strictEqual(ge.meta.note, '这个模型不支持上网搜索');
+    assert.strictEqual((await c.post('/api/test/gemini')).json.note, '这个模型不支持上网搜索', '「保存并测试」时就能看出来');
+
+    // 搜索自己的额度用完了：聊天照常，注明这次没有上网；这位成员不会因此被标成“额度用完”
+    api.setMode('search-quota');
+    before = geminiRequests().length;
+    s = await sendAndWait(c, { text: '@Gemini 再查一下' });
+    ge = aiMessages(s).pop();
+    assert.deepStrictEqual(geminiRequests().slice(before).map(toolsOf), [['google_search', 'url_context'], []]);
+    assert.deepStrictEqual([ge.speaker, ge.meta.note], ['gemini', '搜索的额度用完了，这次没有上网']);
+    assert.strictEqual(await limitedOf('gemini'), null);
+    // 整个账号的额度用完了（报错里没提搜索）：不多试，照原来的办法标出来
+    api.setMode('gemini-minute');
+    before = geminiRequests().length;
+    const limited = (await c.post('/api/test/gemini')).json;
+    assert.ok(!limited.ok && limited.limited, JSON.stringify(limited));
+    assert.strictEqual(geminiRequests().length - before, 1);
+    await c.post('/api/usage/retry', { member: 'gemini' });
+
+    // 报错里提到 tool，其实是别的原因：去掉工具试一次，还是同一个错就不再试，报的是原来的错
+    api.setMode('tools-other');
+    before = geminiRequests().length;
+    const bad = (await c.post('/api/test/gemini')).json;
+    assert.ok(!bad.ok && bad.error.includes('Tool use is not available'), bad.error);
+    assert.deepStrictEqual(geminiRequests().slice(before).map(toolsOf), [['google_search', 'url_context'], []]);
+
+    // GitHub Models 没有通用的搜索办法：请求里不加工具，人设里也不说可以上网
+    api.setMode('ok');
+    s = await sendAndWait(c, { text: '@GPT 查一下' });
+    const gp = parseInfo(aiMessages(s).pop().text, 'MOCK-GPT');
+    assert.deepStrictEqual({ system: gp.system, webRule: gp.webRule, tools: gp.tools }, { system: true, webRule: undefined, tools: undefined });
+
+    // 关掉以后，Gemini API 的请求里也不带工具
+    await c.post('/api/config', { webSearch: false });
+    api.setMode('grounded');
+    s = await sendAndWait(c, { text: '@Gemini 最后一次' });
+    assert.deepStrictEqual(toolsOf(geminiRequests().pop()), []);
+    assert.deepStrictEqual(parseInfo(aiMessages(s).pop().text, 'MOCK-GEMINI-API'), { system: true });
+  } finally {
+    api.setMode('ok');
+    await c.post('/api/config', { webSearch: true, members: { gemini: { provider: 'agy-cli' }, gpt: { provider: 'codex-cli' } } });
+  }
+});
+
 test('模型和思考强度：传给命令行和接口，回复上标出来；不支持时自动忽略', async () => {
   await c.post('/api/config', {
     members: {
@@ -989,6 +1135,9 @@ test('旧版本命令行工具：不认识的参数会自动去掉再试', async
   process.env.MOCK_OLD_CODEX = '1';
   try {
     assert.ok((await c.post('/api/test/claude')).json.ok);
+    // 成功的那次没有那两个不认的参数，上网的参数还在
+    const ran = diagCalls().pop().runs.pop().args.join(' ');
+    assert.ok(!/--no-session-persistence|--permission-mode/.test(ran) && ran.includes('--tools WebSearch,WebFetch --allowedTools WebSearch,WebFetch'), ran);
     const r = (await c.post('/api/test/gpt')).json;
     assert.ok(r.ok, r.error);
   } finally {
@@ -1001,7 +1150,7 @@ test('GPT 默认用 Codex CLI：只读模式，提示词从标准输入传', asy
   await c.post('/api/new');
   const s = await sendAndWait(c, { text: '@GPT 你好' });
   const info = parseInfo(aiMessages(s)[0].text, 'MOCK-CODEX');
-  assert.deepStrictEqual(info, { exec: true, sandbox: 'read-only', stdinDash: true, hasSystem: true, blocks: 1 });
+  assert.deepStrictEqual(info, { exec: true, sandbox: 'read-only', stdinDash: true, hasSystem: true, blocks: 1, webSearch: 'live', webRule: true });
 });
 
 test('Gemini 换成 API Key：密钥错误有提示，正确时能用', async () => {
@@ -1120,13 +1269,20 @@ test('Windows：.cmd 解析不了时走 cmd.exe，人设改由标准输入传递
   await c.post('/api/config', { members: { claude: { 'claude-cli': { command: file } } } });
   try {
     await c.post('/api/new');
-    const s = await sendAndWait(c, { text: '@Claude 你好' });
-    const info = parseInfo(aiMessages(s)[0].text, 'MOCK-CLAUDE');
+    let s = await sendAndWait(c, { text: '@Claude 你好' });
+    let info = parseInfo(aiMessages(s)[0].text, 'MOCK-CLAUDE');
+    // 上网搜索默认打开：带逗号的参数经过 cmd.exe 也要原样传到
     assert.deepStrictEqual(
-      { systemArg: info.systemArg, stdinHasSystem: info.stdinHasSystem, toolsDisabled: info.toolsDisabled },
-      { systemArg: false, stdinHasSystem: true, toolsDisabled: true }
+      { systemArg: info.systemArg, stdinHasSystem: info.stdinHasSystem, tools: info.tools, allowedTools: info.allowedTools },
+      { systemArg: false, stdinHasSystem: true, tools: 'WebSearch,WebFetch', allowedTools: 'WebSearch,WebFetch' }
     );
+    // 关掉以后是一个空的参数（--tools ""）
+    await c.post('/api/config', { webSearch: false });
+    await c.post('/api/new');
+    s = await sendAndWait(c, { text: '@Claude 你好' });
+    info = parseInfo(aiMessages(s)[0].text, 'MOCK-CLAUDE');
+    assert.deepStrictEqual({ stdinHasSystem: info.stdinHasSystem, toolsDisabled: info.toolsDisabled, allowedTools: info.allowedTools }, { stdinHasSystem: true, toolsDisabled: true, allowedTools: undefined });
   } finally {
-    await c.post('/api/config', { members: { claude: { 'claude-cli': { command: 'claude' } } } });
+    await c.post('/api/config', { webSearch: true, members: { claude: { 'claude-cli': { command: 'claude' } } } });
   }
 });
