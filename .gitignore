@@ -8,6 +8,8 @@ workspace/
 usage.json
 diagnostics.json
 diagnostics.json.tmp
+models.json
+models.json.tmp
 
 *.log
 .DS_Store
