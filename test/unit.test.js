@@ -839,3 +839,32 @@ test('用量记录：到点后稍等再试；一试又用完就隔久一点；�
     clearTimeout(x.expiryTimer);
   }
 });
+
+test('打开程序：从一个新的空对话开始，上次的对话存进历史；空对话不存', async () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const { createAppServer } = require('../lib/app-server');
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rt-open-'));
+  const dir = path.join(dataDir, 'data');
+  const histDir = path.join(dir, 'history');
+  const current = () => JSON.parse(fs.readFileSync(path.join(dir, 'current.json'), 'utf8'));
+  const open = async () => (await createAppServer({ dataDir, publicDir: path.join(__dirname, '..', 'public') })).close();
+
+  fs.mkdirSync(dir, { recursive: true });
+  const last = { id: 'c-last', createdAt: Date.now(), messages: [{ id: 'm1', speaker: 'user', text: '上次聊的话题', ts: Date.now() }] };
+  fs.writeFileSync(path.join(dir, 'current.json'), JSON.stringify(last));
+
+  await open();
+  assert.deepStrictEqual(current().messages, []);
+  const saved = fs.readdirSync(histDir);
+  assert.strictEqual(saved.length, 1);
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(histDir, saved[0]), 'utf8')).messages, last.messages);
+
+  // 打开又关掉、一句话也没说：历史里不会多出空对话
+  await open();
+  await open();
+  assert.deepStrictEqual(fs.readdirSync(histDir), saved);
+  assert.deepStrictEqual(current().messages, []);
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});
