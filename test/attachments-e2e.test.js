@@ -663,7 +663,7 @@ test('英文界面：附件的提示词、说明和错误都是英文', async ()
   }
 });
 
-test('程序重启后：发出去的附件还在，没发出去的已经清掉', async () => {
+test('程序重启后：发出去的附件还在（在历史对话里），没发出去的已经清掉', async () => {
   const dir = tmpDir('rt-data-');
   fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ version: 2, lang: 'zh', members: { gemini: { enabled: false }, gpt: { enabled: false } } }));
   const first = createAppServer({ dataDir: dir, publicDir: path.join(ROOT, 'public') });
@@ -686,6 +686,10 @@ test('程序重启后：发出去的附件还在，没发出去的已经清掉',
   await second.listen(0);
   try {
     const c2 = client(second.port);
+    // 重启后从新的空对话开始，上次的对话在「历史对话」里，打开它接着聊
+    assert.deepStrictEqual((await c2.get('/api/state')).json.messages, []);
+    const [prev] = (await c2.get('/api/history')).json.items;
+    await c2.post('/api/history/open', { file: prev.file });
     const s = (await c2.get('/api/state')).json;
     assert.deepStrictEqual(s.messages[0].attachments, [sent]);
     assert.deepStrictEqual((await getRaw(`/api/file/${sent.file}`, second.port)).body, PNG);
