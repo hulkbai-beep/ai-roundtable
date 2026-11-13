@@ -54,10 +54,12 @@ before(async () => {
   app = createAppServer({ dataDir, publicDir: path.join(ROOT, 'public') });
   await app.listen(0);
   c = client(app.port);
-  // 默认每条消息会换一个发言顺序；这里关掉，下面的测试按固定的顺序检查（换顺序的测试在 e2e.test.js 里）
+  // 默认每条消息会换一个发言顺序；这里关掉，下面的测试按固定的顺序检查（换顺序的测试在 e2e.test.js 里）。
+  // 上网搜索默认是打开的；这里也关掉，下面检查的是“只为附件打开了什么”，带附件又能上网的情况单独有一个测试
   const r = await c.post('/api/config', {
     lang: 'zh',
     shuffleOrder: false,
+    webSearch: false,
     members: {
       gpt: { 'github-models': { token: 'good-token', baseUrl: `http://127.0.0.1:${api.port}/inference` } },
       gemini: { 'gemini-api': { apiKey: 'good-key', baseUrl: `http://127.0.0.1:${api.port}` } },
@@ -593,6 +595,32 @@ test('Claude Code 没有权限打开附件时，在回复上注明', async () =>
     assert.strictEqual(last(s, 'claude').meta.note, '');
   } finally {
     delete process.env.MOCK_CLAUDE_DENY;
+  }
+});
+
+test('带附件又能上网：Read 和上网的工具都打开，事先批准的只有上网的那两个', async () => {
+  await c.post('/api/config', { webSearch: true });
+  try {
+    await c.post('/api/new');
+    const img = await upload('截图.png', PNG);
+    const s = await sendAndWait(c, { text: '@Claude @GPT 看图，再查一下', attachments: [img.id] });
+    const cl = parseInfo(last(s, 'claude').text, 'MOCK-CLAUDE');
+    assert.deepStrictEqual(
+      { tools: cl.tools, allowedTools: cl.allowedTools, permissionMode: cl.permissionMode, files: cl.files.length },
+      { tools: 'Read,WebSearch,WebFetch', allowedTools: 'WebSearch,WebFetch', permissionMode: 'default', files: 1 },
+      'Read 不在事先批准的工具里：读 workspace 以外的文件还是会被拒绝'
+    );
+    assert.strictEqual(cl.webRule, 'files', '人设里用的是“除了上网和查看主持人发来的附件”那一条');
+    const cx = parseInfo(last(s, 'gpt').text, 'MOCK-CODEX');
+    assert.deepStrictEqual({ webSearch: cx.webSearch, sandbox: cx.sandbox, images: cx.images.length }, { webSearch: 'live', sandbox: 'read-only', images: 1 });
+
+    // 被拒绝的是上网的工具：注明的是“没有权限上网”，不说成打不开附件
+    process.env.MOCK_CLAUDE_DENY = 'web';
+    const denied = await sendAndWait(c, { text: '@Claude 再查一下' });
+    assert.strictEqual(last(denied, 'claude').meta.note, 'Claude Code 没有权限上网');
+  } finally {
+    delete process.env.MOCK_CLAUDE_DENY;
+    await c.post('/api/config', { webSearch: false });
   }
 });
 

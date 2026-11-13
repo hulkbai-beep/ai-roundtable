@@ -114,6 +114,7 @@ process.stdin.on('end', () => {
     return;
   }
 
+  const configs = args.filter((a, i) => args[i - 1] === '-c');
   const info = {
     exec: args[0] === 'exec',
     sandbox: args[args.indexOf('--sandbox') + 1],
@@ -121,7 +122,12 @@ process.stdin.on('end', () => {
     hasSystem: input.includes('你是 GPT'),
     blocks: (input.match(/^【[^】\n]+】$/gm) || []).length,
     model: args.includes('-m') ? args[args.indexOf('-m') + 1] : undefined,
-    config: args.includes('-c') ? args[args.indexOf('-c') + 1] : undefined,
+    // -c 后面的设置：web_search=live（上网搜索）单独报，其余的报第一个。
+    // 关掉时（web_search=disabled）不写进回复：回复会出现在后面的聊天记录里，关着的时候要和加这个功能以前一字不差，
+    // 有的测试量的就是提示词的长度。传没传 disabled，测试从诊断记录里看参数
+    config: configs.find((v) => !v.startsWith('web_search=')),
+    webSearch: configs.includes('web_search=live') ? 'live' : undefined,
+    webRule: /你可以上网|You can use the web/.test(input) ? true : undefined,
     images: args.includes('--image') ? imageArgs() : undefined,
     files: listedFiles(input),
   };

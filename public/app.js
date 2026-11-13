@@ -1008,6 +1008,9 @@
     const shuffle = el('input', { type: 'checkbox' });
     shuffle.checked = Boolean(draft.shuffleOrder);
     shuffle.addEventListener('change', () => (draft.shuffleOrder = shuffle.checked));
+    const web = el('input', { type: 'checkbox' });
+    web.checked = Boolean(draft.webSearch);
+    web.addEventListener('change', () => (draft.webSearch = web.checked));
     const adv = el('input', { type: 'checkbox' });
     adv.checked = Boolean(prefs.get('advanced', false));
     adv.addEventListener('change', () => {
@@ -1030,6 +1033,15 @@
           T(
             '免得总是同一位先说、同一位压轴。关掉后按下面排的顺序发言。合作模式始终按下面的顺序；各自回答是大家同时回答，没有先后。',
             'So the same member does not always open or close. When off, members speak in the order below. Collaborate always uses the order below; in Answer separately everyone answers at the same time.'
+          )
+        ),
+        el('label', { class: 'check' }, web, T('让成员上网搜索', 'Let members search the web')),
+        el(
+          'span',
+          { class: 'field-help check-help' },
+          T(
+            '需要最新的信息、或者你给了网址时，成员会自己去搜索、打开网页，并在回复里给出来源；查的时候回复会慢一些，用量也多一些。Claude Code、Codex、Antigravity 和 Gemini API Key 支持，GitHub Models 和自定义接口不支持。用 Gemini API Key 时，搜索可能另外计费。',
+            'When a question needs current information, or you give a link, members search and open pages on their own and list their sources. Those replies are slower and use more of your quota. Works with Claude Code, Codex, Antigravity and a Gemini API key; not with GitHub Models or a custom API. With a Gemini API key, Google may charge for searches.'
           )
         ),
         el('label', { class: 'check' }, adv, T('显示高级选项', 'Show advanced options'))
