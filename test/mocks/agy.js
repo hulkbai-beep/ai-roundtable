@@ -4,6 +4,10 @@
 // stderr 上一行 “error: …”，再加一行 “AGY_ERROR: {…}”，退出码 3。
 const fs = require('fs');
 const args = process.argv.slice(2);
+if (args[0] === '--version') {
+  process.stdout.write('agy 1.4.0\n');
+  process.exit(0);
+}
 if (process.env.MOCK_AGY_SILENT) process.exit(0);
 
 const fail = (lines, code = 3) => {

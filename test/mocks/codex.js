@@ -10,6 +10,10 @@
 // 这个文件要能单独运行：Windows 上的测试会把它单独复制到别的目录（见 test/helpers.js 的 makeBin），不能 require 旁边的文件。
 const fs = require('fs');
 const args = process.argv.slice(2);
+if (args[0] === '--version') {
+  process.stdout.write('codex-cli 0.99.0\n');
+  process.exit(0);
+}
 
 // codex 写恢复时间的格式（codex-rs/protocol/src/error.rs 的 format_retry_timestamp）：
 // 当天写 “3:05 PM”，不是当天写 “Jan 2nd, 2026 3:05 PM”

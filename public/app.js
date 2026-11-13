@@ -1537,6 +1537,11 @@
       if (!state.messages.length) return toast(T('现在还没有内容可以导出', 'Nothing to export yet'));
       window.location.href = '/api/export';
     });
+    // 诊断信息：服务端要跑一遍各工具的 --version，可能要几秒
+    $('#btn-diagnostics').addEventListener('click', () => {
+      toast(T('正在整理诊断信息……', 'Putting the diagnostics together...'));
+      window.location.href = '/api/diagnostics';
+    });
     $('#btn-history').addEventListener('click', openHistory);
     $('#btn-usage').addEventListener('click', openUsage);
     $('#btn-settings').addEventListener('click', openSettings);

@@ -3,6 +3,10 @@
 // 回复里带上收到的参数信息，测试用它来检查参数有没有传对。
 const fs = require('fs');
 const args = process.argv.slice(2);
+if (args[0] === '--version') {
+  process.stdout.write('2.1.300 (Claude Code)\n');
+  process.exit(0);
+}
 if (process.env.MOCK_OLD_CLAUDE && args.includes('--no-session-persistence')) {
   console.error("error: unknown option '--no-session-persistence'");
   process.exit(1);

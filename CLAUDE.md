@@ -11,6 +11,7 @@
 - `lib/providers.js`：各种接入方式。`lib/prompt.js`：人设和聊天记录拼装（太长时保留第一条话题和最近的消息）。
 - `lib/spawn.js`：Windows 上启动命令行工具（见下文）。
 - `lib/usage.js`：每次发言用了多少 token、谁的额度用完了（存在 `usage.json`）。`lib/limits.js`：从工具的报错里认出“额度用完了”，读出什么时候恢复。
+- `lib/diag.js`：诊断记录。每次发言（`callProvider` 里的 `diag.track`）启动了哪些程序、参数（长参数只记长度）、退出码、stdout / stderr 原样（太长的只留头尾），存在 `diagnostics.json`，只留最近 30 次。`spawn.js` 的 `runAdaptive` 每启动一次程序记一条，两边靠 AsyncLocalStorage 连起来。设置底部的「保存诊断信息」下载 `GET /api/diagnostics`：再加上各工具 `--version` 的输出和各成员的设置（标了 secret 的字段和网址里的账号密码去掉）。用来对照真机上各工具的真实输出；改 providers 时不用管它。
 - `lib/attachments.js`：附件的类型判断（看文件开头的字节，不信扩展名）、保存和取用，文件在 `workspace/attachments/`。`lib/doc-text.js`（zip + docx / xlsx / pptx + 文本编码）和 `lib/pdf-text.js` 负责取文字，全部自己解析。
 - `public/`：原生 HTML/CSS/JS，不依赖任何框架；Markdown 渲染是自己写的，先转义再排版。
 

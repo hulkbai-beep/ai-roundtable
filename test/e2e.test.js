@@ -351,6 +351,25 @@ test('某位成员出错：显示原因和建议，其他人照常发言', async
   }
 });
 
+test('诊断信息：各工具的版本、每次发言启动的程序和原样输出，提示词只记长度', async () => {
+  const r = await c.get('/api/diagnostics');
+  assert.strictEqual(r.status, 200);
+  assert.match(r.headers['content-disposition'], /^attachment; filename="ai-roundtable-diagnostics-\d{4}-\d\d-\d\d\.md"$/);
+  const t = r.text;
+  for (const v of ['2.1.300 (Claude Code)', 'agy 1.4.0', 'codex-cli 0.99.0']) assert.ok(t.includes(v), v);
+  // 上一个测试里 agy 什么都没输出，记成 error，退出码 0
+  assert.match(t, /claude via claude-cli \(chat\): ok/);
+  assert.match(t, /gemini via agy-cli \(chat\): error/);
+  assert.match(t, /Antigravity CLI[^\n]*\n[^]*?#### Run 1: exit 0/);
+  // Claude 的原样输出（JSON）在里面；人设和 agy 的提示词这种长参数只记长度
+  assert.ok(t.includes('"type":"result"') || t.includes('"type": "result"'));
+  assert.match(t, /<\d+ chars of prompt text>/);
+  // 存在数据目录里，重启后还在
+  const saved = JSON.parse(require('fs').readFileSync(path.join(app.dataDir, 'diagnostics.json'), 'utf8'));
+  assert.ok(saved.calls.length > 0 && saved.calls.length <= 30);
+  assert.ok(saved.calls.every((x) => Array.isArray(x.runs)));
+});
+
 test('用量：记下每位成员用了多少 token，回复上标出来', async () => {
   await c.post('/api/usage/reset', {});
   await c.post('/api/new');

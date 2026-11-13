@@ -839,3 +839,16 @@ test('用量记录：到点后稍等再试；一试又用完就隔久一点；�
     clearTimeout(x.expiryTimer);
   }
 });
+
+test('诊断信息：去掉密钥和网址里的账号密码，长输出只留头尾', () => {
+  const { redactMember, redactUrl, clip } = require('../lib/diag');
+  const { PROVIDERS } = require('../lib/providers');
+  const out = redactMember({ 'gemini-api': { apiKey: 'AIza-secret', model: 'gemini-flash-latest', baseUrl: 'https://u:p@example.com/x' }, 'agy-cli': { apiKey: '' } }, PROVIDERS);
+  assert.deepStrictEqual(out['gemini-api'], { apiKey: '(set)', model: 'gemini-flash-latest', baseUrl: 'https://***@example.com/x' });
+  assert.strictEqual(redactUrl('http://user:pass@127.0.0.1:7890'), 'http://***@127.0.0.1:7890');
+  assert.strictEqual(redactUrl('http://127.0.0.1:7890'), 'http://127.0.0.1:7890');
+  const long = `HEAD${'x'.repeat(20000)}TAIL`;
+  const c = clip(long);
+  assert.ok(c.startsWith('HEAD') && c.endsWith('TAIL') && c.length < 6500 && c.includes('chars omitted'));
+  assert.strictEqual(clip('\u001b[31mred\u001b[0m'), 'red');
+});
