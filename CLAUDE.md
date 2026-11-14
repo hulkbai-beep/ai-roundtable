@@ -33,7 +33,7 @@
 - **GPT 默认用 Codex CLI**（`codex exec --sandbox read-only -o <文件> -`，提示词从标准输入传），用户用 ChatGPT 账号登录，免费账号也能用（OpenAI 可能只是限时开放）。1.0.1 起默认从 GitHub Models 换成了 Codex：`lib/store.js` 会把 version 1 配置里的 github-models 迁移成 codex-cli。备选是 GitHub Models 免费额度（`https://models.github.ai/inference`，fine-grained token 需要 models:read；免费档每次请求约 8000 token，所以只带 5000 字聊天记录）和自定义 OpenAI 兼容接口。
 - **发言顺序**：只有「各自回答」是大家同时回答（用量不变，只需要等最慢的那一位）。自由讨论和辩论还是轮流说，但默认每条消息随机换一个顺序（`lineup` / `shuffled`，设置项 `shuffleOrder`；上一次先说的那位、「继续聊」时刚说完话的那位、发新消息时还在说话的那位尽量不排第一个；同一条消息的几轮顺序相同），人设里让后说的人先用一两句话说出自己的看法再接话（`prompt.js` 的 `REPLY_RULES` / `turnPosition`），减少跟风。考虑过“所有模式都同时回答”，没有采用：只聊一轮时它和「各自回答」没有区别，大家也没法互相接话；要互相回应就得多聊一轮，用量翻倍。合作模式要在前面的人的成果上接着做，所以始终按设置里排的顺序。@点名按点名的顺序一个一个说，「各自回答」模式下点了两位以上也是这样（这时按自由讨论来，不然后面的人看不到前面的回答）。
 - **Windows 启动策略**：.exe 直接启动（Node 负责参数转义）；npm 生成的 .cmd 会被解析成“node + 脚本”直接启动（优先用 npm 目录里的 node.exe，其次 PATH 里的 node，桌面版没有 Node 时用 Electron 自带的，设置 `ELECTRON_RUN_AS_NODE=1`）；其他 .cmd 只能经过 cmd.exe，这时只传简单参数，人设并进标准输入。
-- **兼容不同版本**：可选参数分组传递，命令行报“不认识的参数”时去掉那一组再试（`runAdaptive`）。
+- **兼容不同版本**：可选参数分组传递，命令行报“不认识的参数”时去掉那一组再试（`runAdaptive`）。各家报错的写法不一样（`findUnknownFlag`）；agy 是 Go 写的，传 `--model` 报的是 `flags provided but not defined: -model`（复数、一条横线），所以比的时候只比名字、不比横线（`sameFlag`）。新见到的写法，把原话加进 `test/unit.test.js`。
 - **用量**（`lib/usage.js`，数据在 `usage.json`，只留 30 天）：每次发言记录 token。各家统一成“合计 = 没走缓存的输入 + 输出”（Codex 自己报的就是这个数），走缓存的输入单独记在 `cached` 里，界面上用 * 标出。Claude 读 JSON 里的 `modelUsage`（这次运行所有模型调用的合计；没有时读 `usage`），Codex 读 stderr 末尾的 `tokens used`（数字按系统语言加分隔符，例如 `1.234`），接口读 `usage` / `usageMetadata`；agy 不报用量，按字数估算并标 ≈。
 - **额度用完**（`lib/limits.js` 识别，`lib/usage.js` 记标记）：
   - 只看工具自己说的话：codex exec 会把提示词原样回显在 stderr 上，判断前先用 `stripEcho` 去掉（要拿真正发出去的那段文字去比：带附件时提示词后面多一段文件清单，文件名是用户起的），而且只看 `ERROR:` 开头的行；Claude 看 JSON 里的 `result` / `errors` / `api_error`；agy 先看 `AGY_ERROR` 那一行（429 / `RESOURCE_EXHAUSTED`），没有再看 stderr 上的文字。有的版本不报错、把那句话当成回复输出，由 `limitReply` 认（只认很短、开头就是那句话的回复；`You've hit your … limit` 中间只能是说额度的词，`You've reached your daily caffeine limit.` 是聊天）。接口看状态码：429 / 402 算，但“这一次请求太大”不算（要看完整的报错，不能只看截短后的那一段）。报错里给用户看的文字也只用工具自己的话：它会显示在「用量」里、存进 `usage.json`，不能混进被回显的聊天内容。
@@ -77,20 +77,19 @@
   - 下拉框里依次是：“默认”（走接口的没有这一项，`noDefault`）、写死的几个（`choices`）、「加载可用模型」问来的、“自定义”。问来的列表和“每个名字实际用的是哪个模型”都由 `ModelStore` 存在数据目录的 `models.json`，随 `/api/config` 的 `models` 发给界面。
   - 「加载可用模型」是 `POST /api/models {member}`（要启动程序、发请求，所以是 POST），问的是这位成员**保存下来的**那种接入方式，界面先保存再问：
     - Codex：`codex debug models`，stdout 上是一行 JSON（`{"models":[…]}`，每个模型还带着一大段 `base_instructions`，整个输出可能有几百 KB）。和 Codex 自己的 `/model` 一样，只要 `visibility` 是 `list` 的，按 `priority` 从小到大排；用 `slug` 当名字（传给 `-m`）。旧版本没有这个命令，报“这个版本的 Codex 还不能列出模型”。
-    - Antigravity：`agy models --output-format json`（`models` 命令 1.0.5 起就有，`--output-format` 是 1.1.12 加的，放在 `runAdaptive` 的组里，不认就去掉、改读文字）。**输出长什么样官方没有写**，所以 `parseModelList` 认得宽：JSON 的数组 / 包一层 / 一行一个 / 名字当键，文字的表格（标题、分隔线、项目符号、`(default)`）。认不出来时把原样的输出放进报错里；真机上的样子要从诊断信息里看，看到以后把它加进 `test/unit.test.js` 的例子和 `test/mocks/agy.js`（现在那里的两种样子是猜的）。
+    - Antigravity：`agy models`，不加别的参数。更新日志说 1.1.12 起 `models` 可以加 `--output-format json`，但 **Tim 的真机（Windows，2026-11）上的 agy 不认**：`Usage: agy.exe models [flags] … Flags: -h … --help … Error: flags provided but not defined: -output-format`，退出码 1。所以不加这个参数，读 stdout 上的文字：一行一个模型，有的版本是“名字<Tab>给人看的名字”（`gemini-3.8-flash-high<Tab>Gemini 3.8 Flash (High)`），有的一行只有给人看的名字（这时整个名字就是模型，`--model` 认它）；“Fetching available models...”在 stderr 上；没登录是 `Error: Please sign in to view available models. …`，退出码 1。这几种样子出自 varadfromeast/codex-agy-bridge 的源码和测试（它调用真的 agy），**不是在 Tim 的真机上看到的**，所以 `parseModelList` 仍然认得宽：先找像 `gemini-3-pro` 的一栏，没有再按“一行一个名字”读（多数行里要有数字，提示和统计不算），JSON 的几种样子也还认。认不出来时把 stdout 的开头放进报错里；真机上的样子看到以后，把它加进 `test/unit.test.js` 的例子和 `test/mocks/agy.js`。
     - Gemini API：`GET /v1beta/models`（只要支持 `generateContent` 的，会翻页）；自定义接口：`GET <接口地址>/models`；GitHub Models：`GET /catalog/models`。
     - Claude Code **没有能列出模型的命令**，下拉框里是它认的几个名字（opus、sonnet、haiku、fable，出自 model-config 文档的 Model aliases）。Fable 写明了“可能另外收费”：文档说它可能从 usage credits 里扣，而 `-p` 运行时不会先问。
   - 版本号怎么来：每次回复（聊天和「保存并测试」）之后，`orchestrator.js` 的 `noteModel` 把“设置里填的名字 → 回复的 `meta.model`”记下来（两个一样就不记），下拉框里显示成 `Opus（…） · claude-opus-5-5`、`默认 · gpt-5.5`。`meta.model` 的来源：Claude 是 `modelUsage` 的键（一次回复里可能有好几个模型，比如 WebFetch 用小模型读网页，`claudeMainModel` 取和设置的名字对得上的那个，对不上就取花费最多的）；Codex 是它开头那段信息里的 `model: …`（`codexHeaderModel`，只看两条 `--------` 之间，后面是回显的提示词）；接口是返回里的 `model` / `modelVersion`；agy 不报，所以它的“默认”后面没有。
   - 列表和记下来的版本都跟着设置走（`ModelStore.key`：命令、接口地址、Key 的哈希，Key 本身不存）：换了其中一个，多半是换了账号，原来的就不再显示。
   - 列模型的调用也记进诊断记录（`kind` 是 `models`，“回复”那一栏是读出来的名字），所以真机上读错了能对照原样的输出。
-  - 出处：openai/codex 的 `cli/src/main.rs`（`debug models`）、`protocol/src/openai_models.rs`（`ModelInfo`）、`models-manager/src/manager.rs`（排序和筛选），Antigravity CLI 的 `CHANGELOG.md`，Claude Code 文档的 model-config（都是 2026-11 查的）；Gemini API 和 OpenAI 的列表接口是凭记忆写的。都还没有在真机上验证过。
+  - 出处：openai/codex 的 `cli/src/main.rs`（`debug models`）、`protocol/src/openai_models.rs`（`ModelInfo`）、`models-manager/src/manager.rs`（排序和筛选），Antigravity CLI 的 `CHANGELOG.md`、varadfromeast/codex-agy-bridge 的 `src/codex_agy_bridge/cli.py` 和 `tests/test_cli.py`，Claude Code 文档的 model-config（都是 2026-11 查的）；Gemini API 和 OpenAI 的列表接口是凭记忆写的。真机上验证过的只有上面 agy 不认 `--output-format` 那一条。
 - 没有用 `--safe-mode`：担心它让 Claude Code 忽略 settings.json 里配置的代理等环境变量。
 
 ## 测试
 
 - `npm test`：单元测试 + 端到端测试（真实的本地服务，加上 `test/mocks/` 里模拟的 claude/agy/codex 和模拟接口）+ 只在 Windows 上运行的参数传递测试。附件的测试在 `test/attachments.test.js`（取文字、保存、提示词）和 `test/attachments-e2e.test.js`（上传到各家收到的整条路）；样本文档在 `test/fixtures/`（真实软件生成的，说明见那里的 README），其他文件用 `test/files.js` 现做。
 - 模拟工具的回复会出现在后面的聊天记录里，有的测试量的是整段提示词的长度（`test/attachments-e2e.test.js` 的“附件很多的长对话”）。Windows 上路径长，那里的余量只有几个字：给模拟工具的回复加字段时，只在新功能打开时才写进去（关着的时候回复要和原来一字不差），启动参数这类东西从诊断记录里看（`diagCalls()` 的 `runs[].args`）。上网搜索那次给 agy 的回复多加了 14 个字，Linux 上通过，Windows 上就超了。
-- `test/e2e.test.js` 里“模型列表”的测试，读 agy 的 JSON 的要排在模拟旧版本（不认 `--output-format`）的前面：不认的参数一旦去掉，这次运行里就不再加回来（`spawn.js` 的 `droppedGroups`）。
 - `test/packaged-app.test.js`：测试打包后的桌面版（CI 在 Windows 上跑）。本机可以用 `xvfb-run -a node test/packaged-app.test.js -- node_modules/electron/dist/electron --no-sandbox .` 测开发版。
 - 还没有用真实账号测试过真实的 claude / agy / codex / GitHub Models。用户（Windows）的 codex 是用 npm 装的：`%APPDATA%\npm\codex.cmd`。
 
