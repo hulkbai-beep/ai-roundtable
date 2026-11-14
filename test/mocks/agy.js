@@ -8,35 +8,41 @@ if (args[0] === '--version') {
   process.stdout.write('agy 1.4.0\n');
   process.exit(0);
 }
-// agy models：列出这个账号能用的模型。加 --output-format json 时输出 JSON（1.1.12 起），不加时是文字。
-// 官方只说了有这个命令和这个参数，输出具体长什么样没有写：下面两种样子都是猜的，
-// 真机上的样子要从诊断信息里看（lib/model-list.js 的 parseModelList 认得比这里宽）
+// Go 写的工具遇到不认识的参数时的说法。下面这句是真机（Windows，2026-11）上看到的原话：
+// 不管传的是 --output-format 还是 -output-format，报错里都只有一条横线，“flags”是复数
+const undefinedFlag = (a) => `Error: flags provided but not defined: -${a.replace(/^-+/, '')}\n`;
+
+// agy models：列出这个账号能用的模型，stdout 上一行一个，“Fetching available models...”在 stderr 上。
+// 一行的样子有两种：“名字<Tab>给人看的名字”，或者只有给人看的名字（MOCK_AGY_MODELS=names）。
+// 这两种样子、没登录时的那句话，出自 varadfromeast/codex-agy-bridge 的测试（它调用的是真的 agy），不是在我们自己的真机上看到的；
+// lib/model-list.js 的 parseModelList 认得比这里宽
 if (args[0] === 'models') {
   const mode = process.env.MOCK_AGY_MODELS;
-  const json = args.includes('--output-format');
-  // 旧版本不认 --output-format
-  if (mode === 'text' && json) {
-    process.stderr.write("error: unknown option '--output-format'\n");
+  // models 后面只认 -h / --help。这段用法说明也是真机上的原话（看到的是挤成一行的，换行的位置是猜的；程序名那里是 agy.exe）
+  const extra = args.slice(1).find((a) => a !== '-h' && a !== '--help');
+  if (extra) {
+    process.stderr.write(`Usage: agy models [flags]\n\nList available models\n\nFlags:\n  -h          Show help\n  --help      Show help\n\n${undefinedFlag(extra)}`);
     process.exit(1);
   }
   // 没登录
   if (mode === 'login') {
-    process.stderr.write('error: You are not signed in. Run agy and sign in with your Google account.\n');
-    process.exit(3);
+    process.stderr.write('Error: Please sign in to view available models. Launch the CLI without arguments to sign in.\n');
+    process.exit(1);
   }
   // 认不出来的输出
   if (mode === 'weird') {
     process.stdout.write('Nothing to show here\n');
     process.exit(0);
   }
-  const models = [
-    { slug: 'gemini-mock-pro-high', label: 'Gemini Mock Pro (High)', default: true },
-    { slug: 'gemini-mock-pro-low', label: 'Gemini Mock Pro (Low)' },
-    { slug: 'gemini-mock-flash', label: 'Gemini Mock Flash' },
-  ];
-  if (json) process.stdout.write(`${JSON.stringify(models)}\n`);
-  else process.stdout.write(`Available models:\n\n${models.map((m) => `${m.default ? '*' : ' '} ${m.slug.padEnd(24)}${m.label}`).join('\n')}\n`);
+  process.stderr.write('Fetching available models...\n');
+  if (mode === 'names') process.stdout.write('Gemini 3 Mock Pro (High)\nGemini 3 Mock Pro (Low)\nGemini 3 Mock Flash\n');
+  else process.stdout.write('gemini-mock-pro-high\tGemini Mock Pro (High)\ngemini-mock-pro-low\tGemini Mock Pro (Low)\ngemini-mock-flash\tGemini Mock Flash\n');
   process.exit(0);
+}
+// 不认 --model 的版本（MOCK_AGY_NOMODEL）：和上面一样的说法
+if (process.env.MOCK_AGY_NOMODEL && args.includes('--model')) {
+  process.stderr.write(undefinedFlag('--model'));
+  process.exit(1);
 }
 if (process.env.MOCK_AGY_SILENT) process.exit(0);
 

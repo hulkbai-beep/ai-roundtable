@@ -3,7 +3,7 @@
 const { test } = require('node:test');
 const assert = require('assert');
 require('../lib/i18n').setLang('zh'); // 下面的断言按中文写；英文版另有测试
-const { resolveCommand, parseCmdShim, quoteForCmd, findUnknownFlag } = require('../lib/spawn');
+const { resolveCommand, parseCmdShim, quoteForCmd, findUnknownFlag, sameFlag } = require('../lib/spawn');
 const { parseMentions, cleanReply, buildTranscript, buildSystemPrompt } = require('../lib/prompt');
 const { splitArgs, maskSecret } = require('../lib/util');
 
@@ -72,7 +72,36 @@ test('识别“不认识的参数”报错（不同命令行框架的写法）',
   assert.strictEqual(findUnknownFlag("error: unexpected argument '--ephemeral' found"), '--ephemeral');
   assert.strictEqual(findUnknownFlag('Error: unknown flag: --model'), '--model');
   assert.strictEqual(findUnknownFlag('flag provided but not defined: -model'), '-model');
+  assert.strictEqual(findUnknownFlag('error: unknown options: --a, --b'), '--a');
   assert.strictEqual(findUnknownFlag('everything is fine'), null);
+  // agy（真机，Windows，2026-11）：传的是 --output-format，报错里是复数的 flags 和一条横线
+  const agy = 'Usage: agy.exe models [flags]\n\nList available models\n\nFlags:\n  -h          Show help\n  --help      Show help\n\nError: flags provided but not defined: -output-format\n';
+  assert.strictEqual(findUnknownFlag(agy), '-output-format');
+  assert.strictEqual(findUnknownFlag(agy.replace(/\s+/g, ' ')), '-output-format');
+  // 报错里的参数和传的是不是同一个：只比名字，不比前面有几条横线
+  assert.ok(sameFlag('--output-format', '-output-format'));
+  assert.ok(sameFlag('--model', '-model') && sameFlag('--model', '--model') && sameFlag('-m', '-m'));
+  assert.ok(sameFlag('--model=x', '-model'));
+  for (const [arg, flag] of [['json', '-json'], ['--models', '-model'], ['--model', '-m'], ['--model', '-'], ['', '-model'], ['--model', '']]) assert.ok(!sameFlag(arg, flag), `${arg} / ${flag}`);
+});
+
+test('不认识的参数：Go 写的工具把 --model 报成 -model，照样去掉那一组再试', async () => {
+  const path = require('path');
+  const { runAdaptive } = require('../lib/spawn');
+  const run = () =>
+    runAdaptive({
+      cacheKey: 'unit-go-flags',
+      command: process.execPath,
+      before: [path.join(__dirname, 'mocks', 'agy.js')],
+      groups: [{ key: 'model', args: ['--model', 'Gemini 3 Pro (High)'] }],
+      after: ['-p', '请只回复两个字'],
+      env: { ...process.env, MOCK_AGY_NOMODEL: '1' },
+      timeoutMs: 20000,
+    });
+  const res = await run();
+  assert.deepStrictEqual([res.code, res.stdout.trim(), res.activeKeys], [0, '在线', []]);
+  // 去掉的那一组，这次运行里不再加回来
+  assert.deepStrictEqual((await run()).activeKeys, []);
 });
 
 test('@点名解析', () => {
@@ -1132,9 +1161,41 @@ test('模型列表：Antigravity 的输出没有文档，JSON 和文字的几种
     { id: 'g-flash', name: 'G Flash', note: '' },
   ]);
   assert.deepStrictEqual(ids('- gemini-3.1-pro (default)\n- gemini-3-flash\n• auto-2'), ['gemini-3.1-pro', 'gemini-3-flash', 'auto-2']);
+  // agy models 的两种样子（出自 varadfromeast/codex-agy-bridge 的测试）。
+  // 一种是“名字<Tab>给人看的名字”：第一栏就是名字，里面没有数字也算（auto）；标题行不算
+  assert.deepStrictEqual(parseModelList('ID\tNAME\ngemini-3.8-flash-high\tGemini 3.8 Flash (High)\r\nauto\tAuto\n'), [
+    { id: 'gemini-3.8-flash-high', name: 'Gemini 3.8 Flash (High)', note: '' },
+    { id: 'auto', name: 'Auto', note: '' },
+  ]);
+  // 另一种一行只有给人看的名字：整个名字就是模型。混在里面的提示和统计不算
+  const names = ['Fetching available models...', 'Gemini 3.1 Pro (High) (default)', 'Gemini 3 Flash', 'Claude Sonnet 4.6 (Thinking)', 'GPT-OSS 120B (Medium)', 'Auto', '', '5 models', 'Use --model to pick one.'].join('\r\n');
+  assert.deepStrictEqual(parseModelList(names), [
+    { id: 'Gemini 3.1 Pro (High)', name: '', note: '默认' },
+    { id: 'Gemini 3 Flash', name: '', note: '' },
+    { id: 'Claude Sonnet 4.6 (Thinking)', name: '', note: '' },
+    { id: 'GPT-OSS 120B (Medium)', name: '', note: '' },
+    { id: 'Auto', name: '', note: '' },
+  ]);
+  // 多数是名字、零星几个像 gemini-3-pro：都算；反过来（表格下面跟着一句话）只要表格里的
+  assert.deepStrictEqual(ids('gemini-3-pro\nGemini 3 Flash (High)\nGemini 3 Pro (Low)\nGemini 4 Argon'), ['gemini-3-pro', 'Gemini 3 Flash (High)', 'Gemini 3 Pro (Low)', 'Gemini 4 Argon']);
+  assert.deepStrictEqual(ids('g-pro-high  G Pro (High)\ng-flash  G Flash\nUpdated 2 minutes ago'), ['g-pro-high', 'g-flash']);
+  // 进度提示用回车在同一行上重画：回车也算换行
+  assert.deepStrictEqual(ids('\u280b Fetching available models...\r\u2819 Fetching available models...\rgemini-3-pro\tGemini 3 Pro\n'), ['gemini-3-pro']);
   // 不是列表的话，一个都不认：提示、报错、一个普通的词
-  for (const out of ['', 'Nothing to show here', 'error: not signed in', 'Loading', 'Done.', 'Usage: agy models [options]', 'Fetching models...  done', 'Total  12', 'NAME  SLUG  DEFAULT', '{"error":{"message":"not signed in"}}', '{"type":"done"}', '42', 'true']) {
+  const usage = 'Usage: agy.exe models [flags]\n\nList available models\n\nFlags:\n  -h          Show help\n  --help      Show help\n';
+  const notLists = ['', 'Nothing to show here', 'error: not signed in', 'Loading', 'Done.', 'Usage: agy models [options]', 'Fetching models...  done', 'Total  12', 'NAME  SLUG  DEFAULT', '{"error":{"message":"not signed in"}}', '{"type":"done"}', '42', 'true'];
+  for (const out of [...notLists, usage, 'Model A\nModel B', 'No models available', '3 models', 'Error: Please sign in to view available models. Launch the CLI without arguments to sign in.', 'Signed in as someone\nPlan: Pro']) {
     assert.deepStrictEqual(parseModelList(out), [], out);
+  }
+  // “默认”这个说明跟着界面语言走
+  require('../lib/i18n').setLang('en');
+  try {
+    assert.deepStrictEqual(parseModelList('* g-pro-1\n  g-flash-1'), [
+      { id: 'g-pro-1', name: '', note: 'default' },
+      { id: 'g-flash-1', name: '', note: '' },
+    ]);
+  } finally {
+    require('../lib/i18n').setLang('zh');
   }
 });
 

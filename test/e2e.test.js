@@ -1140,7 +1140,8 @@ test('英文版：界面文字、AI 的人设和错误提示都换成英文，�
     assert.ok((await c.post('/api/test/claude')).json.ok);
 
     // 模型列表里的说明和报错
-    assert.strictEqual((await c.post('/api/models', { member: 'gemini' })).json.items[0].note, 'default');
+    const weird = (await withEnv({ MOCK_AGY_MODELS: 'weird' }, () => c.post('/api/models', { member: 'gemini' }))).json;
+    assert.deepStrictEqual([weird.error, weird.hint], ['Could not read the model list from Antigravity CLI: Nothing to show here', 'Run agy models in a terminal to see the list, then choose "Custom" and type the model name']);
     const none = (await c.post('/api/models', { member: 'claude' })).json;
     assert.deepStrictEqual([none.error, none.hint], ['This connection type cannot list its models', 'You can skip the list: choose "Custom" under Model and type the model name']);
     const old = (await withEnv({ MOCK_CODEX_MODELS: 'old' }, () => c.post('/api/models', { member: 'gpt' }))).json;
@@ -1185,15 +1186,17 @@ test('模型列表（命令行工具）：Codex 和 Antigravity 列出这个账�
   assert.deepStrictEqual(call.runs[0].args, ['debug', 'models']);
   assert.ok(call.runs[0].stdout.startsWith('{"models":[') && call.runs[0].stdout.includes('chars omitted'));
 
-  // Antigravity：agy models --output-format json
+  // Antigravity：agy models，不加别的参数（真机上的 agy 不认 --output-format）。一行一个：名字<Tab>给人看的名字
   const agy = await c.post('/api/models', { member: 'gemini' });
   assert.strictEqual(agy.status, 200, agy.text);
   assert.deepStrictEqual(agy.json.items, [
-    { id: 'gemini-mock-pro-high', name: 'Gemini Mock Pro (High)', note: '默认' },
+    { id: 'gemini-mock-pro-high', name: 'Gemini Mock Pro (High)', note: '' },
     { id: 'gemini-mock-pro-low', name: 'Gemini Mock Pro (Low)', note: '' },
     { id: 'gemini-mock-flash', name: 'Gemini Mock Flash', note: '' },
   ]);
-  assert.deepStrictEqual(diagCalls().pop().runs[0].args, ['models', '--output-format', 'json']);
+  const agyCall = diagCalls().pop();
+  assert.deepStrictEqual(agyCall.runs.map((x) => [x.args, x.code]), [[['models'], 0]]);
+  assert.ok(agyCall.runs[0].stderr.includes('Fetching available models'), 'stderr 上的提示记在诊断里，不算进列表');
 
   // 下次打开设置还在（/api/config 里带着）
   assert.deepStrictEqual((await modelsOf('gpt|codex-cli')).items.map((m) => m.id), ['gpt-mock', 'gpt-mock-mini']);
@@ -1234,16 +1237,27 @@ test('模型列表（命令行工具）：旧版本、没登录、看不懂的�
   r = await withEnv({ MOCK_AGY_MODELS: 'weird' }, () => c.post('/api/models', { member: 'gemini' }));
   assert.ok(r.status === 400 && r.json.error.includes('Nothing to show here') && r.json.hint.includes('agy models'), r.text);
   r = await withEnv({ MOCK_AGY_MODELS: 'login' }, () => c.post('/api/models', { member: 'gemini' }));
-  assert.ok(r.status === 400 && r.json.error.includes('退出码 3') && r.json.hint.includes('登录'), r.text);
-  // 旧版本不认 --output-format：去掉以后读文字的列表（这个测试要排在读 JSON 的后面：去掉的参数这次运行里不再加回来）
-  r = await withEnv({ MOCK_AGY_MODELS: 'text' }, () => c.post('/api/models', { member: 'gemini' }));
+  assert.ok(r.status === 400 && r.json.error.includes('退出码 1') && r.json.error.includes('Please sign in') && r.json.hint.includes('登录'), r.text);
+  assert.strictEqual((await modelsOf('gemini|agy-cli')).items.length, 3, '没加载成功时，原来的列表还在');
+  // 有的版本一行只有一个给人看的名字：整个名字就是模型
+  r = await withEnv({ MOCK_AGY_MODELS: 'names' }, () => c.post('/api/models', { member: 'gemini' }));
   assert.strictEqual(r.status, 200, r.text);
   assert.deepStrictEqual(r.json.items, [
-    { id: 'gemini-mock-pro-high', name: 'Gemini Mock Pro (High)', note: '默认' },
-    { id: 'gemini-mock-pro-low', name: 'Gemini Mock Pro (Low)', note: '' },
-    { id: 'gemini-mock-flash', name: 'Gemini Mock Flash', note: '' },
+    { id: 'Gemini 3 Mock Pro (High)', name: '', note: '' },
+    { id: 'Gemini 3 Mock Pro (Low)', name: '', note: '' },
+    { id: 'Gemini 3 Mock Flash', name: '', note: '' },
   ]);
-  assert.deepStrictEqual(diagCalls().pop().runs.map((x) => x.args), [['models', '--output-format', 'json'], ['models']]);
+  // 选中带空格和括号的名字：原样传给 --model
+  await c.post('/api/config', { members: { gemini: { 'agy-cli': { model: 'Gemini 3 Mock Pro (Low)' } } } });
+  try {
+    const t = await c.post('/api/test/gemini', {});
+    assert.ok(t.json.ok, t.text);
+    const args = diagCalls().pop().runs[0].args;
+    assert.deepStrictEqual(args.slice(0, 3), ['--model', 'Gemini 3 Mock Pro (Low)', '-p']);
+    assert.strictEqual((await modelsOf('gemini|agy-cli')).items.length, 3, '只换了模型，列表还算数');
+  } finally {
+    await c.post('/api/config', { members: { gemini: { 'agy-cli': { model: '' } } } });
+  }
 });
 
 test('模型列表（接口）：Gemini API 和自定义接口；Key 不写进诊断信息', async () => {
